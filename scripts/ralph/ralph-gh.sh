@@ -13,8 +13,10 @@ source "${HERE}/lib.sh"
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 AGENT_LABEL="${AGENT_LABEL:-ready-for-agent}"
+HUMAN_LABEL="${HUMAN_LABEL:-needs-human}"
 BLOCKED_LABEL="${BLOCKED_LABEL:-blocked}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
+VALIDATE_CMD="${VALIDATE_CMD:-npm run typecheck && npm test}"
 AGENT="${AGENT:-claude}"
 PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
 MAX_ITER="${1:-20}"
@@ -39,7 +41,7 @@ select_next_issue() {
 
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.
 run_once() {
-  local num title slug branch wt build_prompt issue_ctx agent_rc
+  local num title slug branch wt build_prompt issue_ctx agent_rc gate_rc
 
   num="$(select_next_issue || true)"
   if [ -z "${num:-}" ]; then
@@ -67,13 +69,30 @@ run_once() {
 
   set +e; ( cd "$wt" && agent_run "$build_prompt" ); agent_rc=$?; set -e
 
+  # GATE 1 — validation. Only run it if the agent itself didn't error out.
+  gate_rc=0
   if [ "$agent_rc" -eq 0 ]; then
-    log "Agent OK on #$num -> finalize"
+    log "GATE 1: validating (#$num) -> $VALIDATE_CMD"
+    set +e; ( cd "$wt" && bash -c "$VALIDATE_CMD" ); gate_rc=$?; set -e
+  fi
+
+  if [ "$(gate_outcome "$agent_rc" "$gate_rc")" = "finalize" ]; then
+    log "PASS #$num (agent=$agent_rc gate=$gate_rc) -> finalize"
     finalize "$num" "$title" "$branch" "$wt"
   else
-    log "Agent failed on #$num (rc=$agent_rc) -> keeping worktree $wt for inspection"
-    # Proper needs-human labelling/commenting arrives with the validation gate (#4).
+    log "FAIL #$num (agent=$agent_rc gate=$gate_rc) -> needs-human"
+    mark_needs_human "$num" "$branch" "$wt" "agent=$agent_rc, gate=$gate_rc"
   fi
+}
+
+# mark_needs_human — failure path: flag for a human, log the gate codes, KEEP the
+# worktree so it can be inspected. Does not push, PR, or close.
+mark_needs_human() {
+  local num="$1" branch="$2" wt="$3" reason="$4"
+  gh issue edit "$num" --repo "$REPO" \
+    --add-label "$HUMAN_LABEL" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+  gh issue comment "$num" --repo "$REPO" \
+    --body "ralph-gh stopped ($reason). Inspect branch \`$branch\` / worktree \`$wt\`."
 }
 
 # finalize — commit, push, open a draft PR, close the issue, remove the worktree.

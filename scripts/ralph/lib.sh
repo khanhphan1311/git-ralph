@@ -28,3 +28,15 @@ slugify() {
     | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
     | cut -c1-40
 }
+
+# gate_outcome <agent_rc> <gate_rc> [review_rc]
+# Pure decision: prints "finalize" only when every gate passed (rc 0), else
+# "needs-human". review_rc defaults to 0 so it's a no-op until #5 wires GATE 2.
+gate_outcome() {
+  local agent_rc="$1" gate_rc="$2" review_rc="${3:-0}"
+  if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ] && [ "$review_rc" -eq 0 ]; then
+    echo finalize
+  else
+    echo needs-human
+  fi
+}
