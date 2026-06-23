@@ -42,6 +42,7 @@ select_next_issue() {
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.
 run_once() {
   local num title slug branch wt build_prompt issue_ctx agent_rc gate_rc
+  local review_rc review_prompt diff_text verdict
 
   num="$(select_next_issue || true)"
   if [ -z "${num:-}" ]; then
@@ -76,12 +77,27 @@ run_once() {
     set +e; ( cd "$wt" && bash -c "$VALIDATE_CMD" ); gate_rc=$?; set -e
   fi
 
-  if [ "$(gate_outcome "$agent_rc" "$gate_rc")" = "finalize" ]; then
-    log "PASS #$num (agent=$agent_rc gate=$gate_rc) -> finalize"
+  # GATE 2 — independent review. A separate reviewer agent reads the diff and emits
+  # a verdict; fail-safe parsing means only an explicit first-line PASS clears it.
+  review_rc=1
+  if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ]; then
+    log "GATE 2: independent review (#$num)"
+    diff_text="$(cd "$wt" && git add -A >/dev/null 2>&1 || true; git diff "origin/${BASE_BRANCH}")"
+    review_prompt="$(mktemp)"
+    { cat "${PROMPT_DIR}/review.md"; echo; echo "## ISSUE #$num"; echo "$issue_ctx";
+      echo; echo "## DIFF (origin/${BASE_BRANCH} -> worktree)";
+      echo '```diff'; printf '%s\n' "$diff_text"; echo '```'; } > "$review_prompt"
+    verdict="$(cd "$wt" && agent_run "$review_prompt" || true)"
+    log "Review verdict line: $(printf '%s' "$verdict" | head -1)"
+    [ "$(parse_review_verdict <<<"$verdict")" = "PASS" ] && review_rc=0
+  fi
+
+  if [ "$(gate_outcome "$agent_rc" "$gate_rc" "$review_rc")" = "finalize" ]; then
+    log "PASS #$num (agent=$agent_rc gate=$gate_rc review=$review_rc) -> finalize"
     finalize "$num" "$title" "$branch" "$wt"
   else
-    log "FAIL #$num (agent=$agent_rc gate=$gate_rc) -> needs-human"
-    mark_needs_human "$num" "$branch" "$wt" "agent=$agent_rc, gate=$gate_rc"
+    log "FAIL #$num (agent=$agent_rc gate=$gate_rc review=$review_rc) -> needs-human"
+    mark_needs_human "$num" "$branch" "$wt" "agent=$agent_rc, gate=$gate_rc, review=$review_rc"
   fi
 }
 
