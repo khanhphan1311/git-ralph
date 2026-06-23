@@ -1,0 +1,10 @@
+# Shell scripts and bats tests MUST stay LF, or bash breaks on `\r`.
+*.sh    text eol=lf
+*.bats  text eol=lf
+*.bash  text eol=lf
+
+# Prompt templates are fed verbatim to agents — keep them LF too.
+scripts/ralph/prompts/*.md text eol=lf
+
+# Default: let git normalise, checkout native.
+*       text=auto
