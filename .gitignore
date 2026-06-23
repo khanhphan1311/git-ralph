@@ -1,0 +1,11 @@
+node_modules/
+npm-debug.log*
+
+# Worktrees the harness creates (if rooted inside the repo)
+.claude/worktrees/
+ralph-worktrees/
+
+# Scratch / logs
+*.log
+.scratch/
+tmp/

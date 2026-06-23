@@ -1,0 +1,12 @@
+{
+  "name": "git-ralph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub-issue/PR-driven Ralph loop + mattpocock engineering skills",
+  "scripts": {
+    "test": "bats scripts/ralph/tests"
+  },
+  "devDependencies": {
+    "bats": "^1.11.0"
+  }
+}
