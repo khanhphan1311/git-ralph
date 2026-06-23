@@ -19,6 +19,7 @@ WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
 VALIDATE_CMD="${VALIDATE_CMD:-npm run typecheck && npm test}"
 AGENT="${AGENT:-claude}"
 PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
+DRY_RUN="${DRY_RUN:-}"
 MAX_ITER="${1:-20}"
 
 log() { printf '\033[1;34m[ralph]\033[0m %s\n' "$*"; }
@@ -128,6 +129,19 @@ finalize() {
   git worktree remove "$wt" --force
 }
 
+# dry_run — print what the selector would pick next, touching nothing (no worktree,
+# no agent, no labels). Read-only: useful to sanity-check priority/blocked logic.
+dry_run() {
+  local num title
+  num="$(select_next_issue || true)"
+  if [ -z "${num:-}" ]; then
+    log "DRY-RUN: no '$AGENT_LABEL' issues -> would print <promise>COMPLETE</promise>"
+  else
+    title="$(gh issue view "$num" --repo "$REPO" --json title -q .title)"
+    log "DRY-RUN: would select #$num — $title"
+  fi
+}
+
 main() {
   local iter=0
   while (( iter < MAX_ITER )); do
@@ -136,7 +150,7 @@ main() {
   done
 }
 
-# Only run the loop when executed directly — sourcing (e.g. from bats) must not.
+# Only run when executed directly — sourcing (e.g. from bats) must not.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-  main
+  if [ -n "$DRY_RUN" ]; then dry_run; else main; fi
 fi
