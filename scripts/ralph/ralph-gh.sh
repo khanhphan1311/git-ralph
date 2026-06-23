@@ -129,6 +129,26 @@ finalize() {
   gh issue comment "$num" --repo "$REPO" --body "Done by ralph-gh. Branch \`$branch\`, draft PR opened."
   gh issue edit "$num" --repo "$REPO" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
   gh issue close "$num" --repo "$REPO"
+  safe_worktree_remove "$wt"
+}
+
+# safe_worktree_remove <worktree-path>
+# Unlink any junctions/symlinks inside the worktree BEFORE git removes it, so
+# `git worktree remove --force` can't follow a reparse point and delete the real
+# target data (#19). On Windows, NTFS junctions need PowerShell to detect reliably.
+safe_worktree_remove() {
+  local wt="$1" link
+  if [ -d "$wt" ]; then
+    if is_windows; then
+      powershell.exe -NoProfile -ExecutionPolicy Bypass \
+        -File "$(cygpath -w "${HERE}/safe-worktree-remove.ps1")" \
+        -WorktreePath "$(cygpath -w "$wt")" || true
+    else
+      while IFS= read -r link; do
+        [ -n "$link" ] && unlink "$link"
+      done < <(find "$wt" -type l 2>/dev/null)
+    fi
+  fi
   git worktree remove "$wt" --force
 }
 
