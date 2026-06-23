@@ -62,6 +62,17 @@ harness_version() {
   echo "git-ralph 0.1.0"
 }
 
+# is_windows
+# True on Git Bash / MSYS / Cygwin. Reads OSTYPE first (overridable for tests),
+# falling back to `uname -s` only when OSTYPE is unset.
+is_windows() {
+  local os="${OSTYPE:-$(uname -s 2>/dev/null)}"
+  case "$os" in
+    msys*|cygwin*|win32*|MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # repo_slug_from_url <git-remote-url>
 # Extracts owner/repo from any remote URL shape (https / git@ scp / ssh, with or
 # without a .git suffix). Used to pin REPO to `origin` rather than letting gh guess
