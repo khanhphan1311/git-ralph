@@ -54,3 +54,13 @@ parse_review_verdict() {
   done
   if [ "$first" = "REVIEW: PASS" ]; then echo PASS; else echo FAIL; fi
 }
+
+# repo_slug_from_url <git-remote-url>
+# Extracts owner/repo from any remote URL shape (https / git@ scp / ssh, with or
+# without a .git suffix). Used to pin REPO to `origin` rather than letting gh guess
+# when multiple remotes (e.g. an upstream) exist.
+repo_slug_from_url() {
+  printf '%s' "$1" \
+    | sed -E 's#\.git$##' \
+    | sed -E 's#^.*[/:]([^/]+/[^/]+)$#\1#'
+}

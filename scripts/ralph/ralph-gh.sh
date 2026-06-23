@@ -10,6 +10,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/lib.sh"
 
 # ---------- Config (override via env) ----------
+# Pin REPO to the `origin` remote — `gh repo view` guesses wrong when an `upstream`
+# remote (snarktank/ralph) also exists (#14). Fall back to gh only if origin is absent.
+REPO="${REPO:-$(repo_slug_from_url "$(git remote get-url origin 2>/dev/null)" 2>/dev/null)}"
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 AGENT_LABEL="${AGENT_LABEL:-ready-for-agent}"
