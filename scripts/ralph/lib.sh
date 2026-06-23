@@ -55,6 +55,13 @@ parse_review_verdict() {
   if [ "$first" = "REVIEW: PASS" ]; then echo PASS; else echo FAIL; fi
 }
 
+# harness_version
+# Prints the harness version string (`git-ralph <semver>`) to stdout. Pure and
+# sourceable — the version is kept in lock-step with package.json's "version".
+harness_version() {
+  echo "git-ralph 0.1.0"
+}
+
 # repo_slug_from_url <git-remote-url>
 # Extracts owner/repo from any remote URL shape (https / git@ scp / ssh, with or
 # without a .git suffix). Used to pin REPO to `origin` rather than letting gh guess
