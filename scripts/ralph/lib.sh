@@ -40,3 +40,17 @@ gate_outcome() {
     echo needs-human
   fi
 }
+
+# parse_review_verdict
+# Reads a reviewer's output on stdin and prints "PASS" or "FAIL". Fail-safe: PASS
+# only when the FIRST non-empty line, trimmed and CR-stripped, equals exactly
+# "REVIEW: PASS". Anything else — empty, mid-text occurrence, extra words — is FAIL.
+parse_review_verdict() {
+  local line first=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -n "$line" ]; then first="$line"; break; fi
+  done
+  if [ "$first" = "REVIEW: PASS" ]; then echo PASS; else echo FAIL; fi
+}
