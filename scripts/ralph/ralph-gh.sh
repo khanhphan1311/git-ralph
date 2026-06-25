@@ -18,6 +18,11 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 AGENT_LABEL="${AGENT_LABEL:-ready-for-agent}"
 HUMAN_LABEL="${HUMAN_LABEL:-needs-human}"
 BLOCKED_LABEL="${BLOCKED_LABEL:-blocked}"
+# Plan-stage labels (#21 Delta A). `awaiting-plan` parks an issue waiting for a human to
+# vet its plan (skipped by the selector like `blocked`); `plan-approved` marks a vetted
+# plan so the loop resumes it ahead of fresh work and jumps straight to implement.
+AWAITING_PLAN_LABEL="${AWAITING_PLAN_LABEL:-awaiting-plan}"
+PLAN_APPROVED_LABEL="${PLAN_APPROVED_LABEL:-plan-approved}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
 VALIDATE_CMD="${VALIDATE_CMD:-npm run typecheck && npm test}"
 AGENT="${AGENT:-claude}"
@@ -45,11 +50,17 @@ agent_run() {
   esac
 }
 
-# select_next_issue — highest-priority open ready-for-agent issue, not blocked.
+# select_next_issue — the next issue to work. Fetches BOTH the ready-for-agent backlog
+# and any plan-approved issues (a plan-approved issue has had ready-for-agent removed, so
+# a single --label query would miss it), merges/dedupes them, then defers the pure
+# priority/exclusion logic to select_issue_from_json (plan-approved first, then P0..P2).
 select_next_issue() {
-  gh issue list --repo "$REPO" --state open --label "$AGENT_LABEL" \
-    --json number,labels --limit 200 \
-    | select_issue_from_json "$BLOCKED_LABEL"
+  { gh issue list --repo "$REPO" --state open --label "$AGENT_LABEL" \
+      --json number,labels --limit 200
+    gh issue list --repo "$REPO" --state open --label "$PLAN_APPROVED_LABEL" \
+      --json number,labels --limit 200
+  } | jq -s 'add | unique_by(.number)' \
+    | select_issue_from_json "$BLOCKED_LABEL" "$AWAITING_PLAN_LABEL" "$PLAN_APPROVED_LABEL"
 }
 
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.

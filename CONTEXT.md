@@ -9,9 +9,15 @@ proposals in these terms.
   agents never push/PR/close on their own.
 - **Loop** — one pass picks at most one issue, runs it to a terminal outcome
   (finalized or `needs-human`), repeats up to `MAX_ITER`.
-- **Issue selector** — pure logic that, given the open `ready-for-agent` issues,
-  drops `blocked` ones, sorts by priority (`P0 < P1 < P2 < unlabelled`) then issue
-  number, and returns the next issue number (or empty).
+- **Issue selector** — pure logic that, given the open `ready-for-agent` and
+  `plan-approved` issues, drops `blocked` and `awaiting-plan` ones, ranks `plan-approved`
+  first, then by priority (`P0 < P1 < P2 < unlabelled`) then issue number, and returns
+  the next issue number (or empty).
+- **awaiting-plan** — a plan has been posted and the loop is waiting for a human to
+  approve it. Skipped by the selector (like `blocked`) so the loop keeps draining other
+  issues instead of blocking.
+- **plan-approved** — a human approved the posted plan. The selector ranks these first
+  and the loop skips the plan stage, going straight to implement against the vetted plan.
 - **Worktree** — an isolated `git worktree` + branch (`agent/<n>-<slug>`) per issue,
   cut from `origin/main`. Created fresh or resumed if it already exists.
 - **Agent runner** — the `claude`/`codex` abstraction that runs a prompt inside a worktree.

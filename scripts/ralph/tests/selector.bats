@@ -52,3 +52,42 @@ setup() {
   result="$(select_issue_from_json blocked <<<"$json")"
   [ "$result" = "10" ]
 }
+
+# --- #21 Delta A: awaiting-plan excluded, plan-approved ranked first ---
+
+@test "plan-approved is chosen ahead of a higher-priority ready-for-agent" {
+  json='[
+    {"number": 30, "labels": [{"name": "ready-for-agent"}, {"name": "P0"}]},
+    {"number": 31, "labels": [{"name": "awaiting-plan"}, {"name": "P0"}]},
+    {"number": 32, "labels": [{"name": "plan-approved"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
+  [ "$result" = "32" ]
+}
+
+@test "awaiting-plan is skipped like blocked (falls to a ready-for-agent)" {
+  json='[
+    {"number": 40, "labels": [{"name": "awaiting-plan"}, {"name": "P0"}]},
+    {"number": 41, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
+  [ "$result" = "41" ]
+}
+
+@test "among plan-approved, priority then number still applies" {
+  json='[
+    {"number": 50, "labels": [{"name": "plan-approved"}, {"name": "P2"}]},
+    {"number": 52, "labels": [{"name": "plan-approved"}, {"name": "P0"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
+  [ "$result" = "52" ]
+}
+
+@test "two equal-priority plan-approved -> lower issue number wins" {
+  json='[
+    {"number": 61, "labels": [{"name": "plan-approved"}, {"name": "P1"}]},
+    {"number": 60, "labels": [{"name": "plan-approved"}, {"name": "P1"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
+  [ "$result" = "60" ]
+}
