@@ -69,6 +69,23 @@ permission to create labels, issues, and PRs on it.
 
 ## Setup
 
+git-ralph is **one clone you reuse for every project** — you don't re-clone it per repo,
+just `git pull` to pick up updates. The split between machine-wide and per-project setup:
+
+**Once per machine**
+- Install `no-mistakes` (binary + shared daemon) — see "Set up the no-mistakes gate" below.
+- Clone git-ralph once; keep it current with `git pull`.
+
+**Once per target project** (run from inside that repo's clone)
+1. `bash /path/to/git-ralph/scripts/setup-no-mistakes.sh` — `no-mistakes init` for this repo
+   (its own gate; the daemon is shared).
+2. Commit a **project-specific `.no-mistakes.yaml`** to its **default branch**, with that
+   project's own `commands.test`. Do **not** copy git-ralph's — that file gates git-ralph itself.
+3. `REPO=<owner/repo> bash /path/to/git-ralph/scripts/setup-labels.sh` — operational labels.
+4. `/setup-matt-pocock-skills` (issue tracker = GitHub) — seed the engineering skills.
+
+Then run the loop from inside the project (Option 1). The sections below expand each step.
+
 ### Option 1 — Point the harness at any repo (no vendoring)
 
 All `git`/`gh` operations run against the **current working directory**, and prompts
