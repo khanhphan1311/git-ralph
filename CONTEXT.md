@@ -21,6 +21,13 @@ proposals in these terms.
   and the loop skips the plan stage, going straight to implement against the vetted plan.
 - **Worktree** — an isolated `git worktree` + branch (`agent/<n>-<slug>`) per issue,
   cut from `origin/main`. Created fresh or resumed if it already exists.
+- **Plan stage** — between worktree and implement, a `PLAN_MODEL` agent writes a short
+  plan and the harness posts it to the issue as the **canonical** record (an `<!-- ralph:plan -->`
+  comment). In **semi** mode (default) the issue is parked on `awaiting-plan` for human
+  approval; with `AUTO_PLAN=1` the plan is auto-approved and implementation proceeds
+  inline. The implement stage reads the approved plan back from that comment.
+- **AUTO_PLAN** — `1` skips human plan approval (full-auto to draft PR); `0` (default) is
+  semi mode. The plan is posted to the issue either way, for audit.
 - **Agent runner** — the `claude`/`codex` abstraction that runs a prompt inside a worktree.
 - **GATE 1 / validation gate** — runs `VALIDATE_CMD` (typecheck + tests) in the worktree.
 - **GATE 2 / independent review** — a separate reviewer agent reads the diff and

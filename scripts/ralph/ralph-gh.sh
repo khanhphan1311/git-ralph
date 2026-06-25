@@ -31,6 +31,12 @@ AGENT="${AGENT:-claude}"
 PLAN_MODEL="${PLAN_MODEL:-claude-opus-4-8}"
 CODE_MODEL="${CODE_MODEL:-claude-sonnet-4-6}"
 REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-4-8}"
+# Plan stage (#21 Delta A). AUTO_PLAN=1 auto-approves the plan inline (full-auto to PR);
+# default 0 is "semi" — post the plan, park the issue on awaiting-plan, and let a human
+# approve by adding plan-approved. The canonical plan always lives in an issue comment,
+# tagged with PLAN_MARKER so the implement stage can read the approved plan back.
+AUTO_PLAN="${AUTO_PLAN:-0}"
+PLAN_MARKER="<!-- ralph:plan -->"
 PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
 DRY_RUN="${DRY_RUN:-}"
 MAX_ITER="${1:-20}"
@@ -63,14 +69,61 @@ select_next_issue() {
     | select_issue_from_json "$BLOCKED_LABEL" "$AWAITING_PLAN_LABEL" "$PLAN_APPROVED_LABEL"
 }
 
+# issue_stage — print "plan" or "implement" for an issue, from its current labels.
+issue_stage() {
+  local num="$1"
+  gh issue view "$num" --repo "$REPO" --json labels -q '.labels' \
+    | issue_stage_from_labels "$PLAN_APPROVED_LABEL"
+}
+
+# post_plan <num> <plan-text> — post the plan to the issue as the canonical, audit-stable
+# record, tagged with PLAN_MARKER so read_approved_plan can find it later.
+post_plan() {
+  local num="$1" plan_text="$2"
+  gh issue comment "$num" --repo "$REPO" \
+    --body "$(printf '%s\n\n## 📋 Ralph plan\n\n%s' "$PLAN_MARKER" "$plan_text")"
+}
+
+# read_approved_plan <num> — print the body of the most recent PLAN_MARKER comment
+# (the approved plan), or nothing if there is none.
+read_approved_plan() {
+  local num="$1"
+  gh issue view "$num" --repo "$REPO" --json comments \
+    -q ".comments | map(select(.body | contains(\"$PLAN_MARKER\"))) | last | .body // \"\"" \
+    2>/dev/null || true
+}
+
+# render_plan_html <worktree> <plan-text> — best-effort nicety: if the optional `lavish`
+# renderer is on PATH, render the plan to plan.html in the worktree for human review.
+# Never fatal — the canonical plan always lives in the issue comment (post_plan).
+render_plan_html() {
+  local wt="$1" plan_text="$2"
+  command -v lavish >/dev/null 2>&1 || return 0
+  printf '%s' "$plan_text" | lavish render --output "${wt}/plan.html" >/dev/null 2>&1 || true
+}
+
+# run_plan_stage <num> <worktree> <issue-ctx> — generate a plan with PLAN_MODEL, post it
+# to the issue (always, for audit), and render plan.html if lavish is available.
+run_plan_stage() {
+  local num="$1" wt="$2" issue_ctx="$3" plan_prompt plan_text
+  plan_prompt="$(mktemp)"
+  { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/plan.md"; echo;
+    echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$plan_prompt"
+  log "Plan (#$num) with model: ${PLAN_MODEL:-<agent default>}"
+  plan_text="$(cd "$wt" && agent_run "$plan_prompt" "$PLAN_MODEL" || true)"
+  [ -n "$plan_text" ] || plan_text="(plan agent produced no output)"
+  post_plan "$num" "$plan_text"
+  render_plan_html "$wt" "$plan_text"
+}
+
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.
 run_once() {
   local num title slug branch wt build_prompt issue_ctx agent_rc gate_rc
-  local review_rc review_prompt diff_text verdict
+  local review_rc review_prompt diff_text verdict stage approved_plan
 
   num="$(select_next_issue || true)"
   if [ -z "${num:-}" ]; then
-    log "No '$AGENT_LABEL' issues left. <promise>COMPLETE</promise>"
+    log "No actionable issues left. <promise>COMPLETE</promise>"
     return 10
   fi
   log "Selected issue #$num"
@@ -79,6 +132,8 @@ run_once() {
   slug="$(slugify "$title")"
   branch="agent/${num}-${slug}"
   wt="${WORKTREE_ROOT}/wt-${num}"
+  stage="$(issue_stage "$num")"
+  log "Stage for #$num: $stage"
 
   git fetch origin "$BASE_BRANCH" --quiet
   if [ -d "$wt" ]; then
@@ -89,8 +144,27 @@ run_once() {
   fi
 
   issue_ctx="$(gh issue view "$num" --repo "$REPO" --comments)"
+
+  # ---- Stage 2: Plan (only for fresh issues; plan-approved issues skip straight to 3) ----
+  if [ "$stage" = "plan" ]; then
+    run_plan_stage "$num" "$wt" "$issue_ctx"
+    if [ "$AUTO_PLAN" = "1" ]; then
+      log "AUTO_PLAN=1 -> auto-approving plan, implementing inline (#$num)"
+      issue_ctx="$(gh issue view "$num" --repo "$REPO" --comments)"  # refresh: include plan
+    else
+      log "Semi mode -> parking #$num on '$AWAITING_PLAN_LABEL' for human approval"
+      gh issue edit "$num" --repo "$REPO" \
+        --add-label "$AWAITING_PLAN_LABEL" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+      return 0  # keep the worktree; the loop moves on to the next issue
+    fi
+  fi
+
+  # ---- Stage 3: Implement against the approved plan ----
+  approved_plan="$(read_approved_plan "$num")"
   build_prompt="$(mktemp)"
-  { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/build.md"; echo; echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
+  { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/build.md"; echo;
+    if [ -n "$approved_plan" ]; then echo "## Approved plan"; echo "$approved_plan"; echo; fi
+    echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
 
   log "Implement (#$num) with model: ${CODE_MODEL:-<agent default>}"
   set +e; ( cd "$wt" && agent_run "$build_prompt" "$CODE_MODEL" ); agent_rc=$?; set -e
@@ -176,13 +250,18 @@ safe_worktree_remove() {
 # dry_run — print what the selector would pick next, touching nothing (no worktree,
 # no agent, no labels). Read-only: useful to sanity-check priority/blocked logic.
 dry_run() {
-  local num title
+  local num title stage
   num="$(select_next_issue || true)"
   if [ -z "${num:-}" ]; then
-    log "DRY-RUN: no '$AGENT_LABEL' issues -> would print <promise>COMPLETE</promise>"
+    log "DRY-RUN: no actionable issues -> would print <promise>COMPLETE</promise>"
   else
     title="$(gh issue view "$num" --repo "$REPO" --json title -q .title)"
-    log "DRY-RUN: would select #$num — $title"
+    stage="$(issue_stage "$num")"
+    if [ "$stage" = "plan" ] && [ "$AUTO_PLAN" != "1" ]; then
+      log "DRY-RUN: would select #$num — $title (stage: plan -> post + await human approval)"
+    else
+      log "DRY-RUN: would select #$num — $title (stage: $stage)"
+    fi
   fi
 }
 

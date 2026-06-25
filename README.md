@@ -174,9 +174,26 @@ All via environment variables (with defaults):
 | `WORKTREE_ROOT` | `../ralph-worktrees`                 | Where per-issue worktrees live                     |
 | `VALIDATE_CMD`  | `npm run typecheck && npm test`      | GATE 1; **set this to your stack** (see below)     |
 | `AGENT`         | `claude`                             | `claude` or `codex`                                |
-| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `build.md` / `review.md` live                |
-| `DRY_RUN`       | _(unset)_                            | If set, print the selection and exit               |
+| `AUTO_PLAN`     | `0`                                  | `1` = auto-approve the plan (full-auto to draft PR); `0` = semi (await human) |
+| `PLAN_MODEL`    | `claude-opus-4-8`                    | Model for the Plan stage                           |
+| `CODE_MODEL`    | `claude-sonnet-4-6`                  | Model for Implement (and remediation fixes)        |
+| `REVIEW_MODEL`  | `claude-opus-4-8`                    | Model for the independent review                   |
+| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` / `review.md` live    |
+| `DRY_RUN`       | _(unset)_                            | If set, print the selection (and stage) and exit   |
 | `MAX_ITER`      | `20` (or first positional arg)       | Max loop iterations                                |
+
+### Plan stage & approval (semi vs `AUTO_PLAN`)
+
+Before implementing, a `PLAN_MODEL` agent writes a short plan and the harness posts it to
+the issue as an `<!-- ralph:plan -->` comment (the canonical, audit-stable record).
+
+- **Semi mode** (default, `AUTO_PLAN=0`): the issue is parked on `awaiting-plan` and the
+  loop moves on. A human reviews the plan comment and approves by **adding the
+  `plan-approved` label** (no need to remove `awaiting-plan`). On a later pass the selector
+  picks it up first and implements straight against the approved plan.
+- **Full-auto** (`AUTO_PLAN=1`): the plan is posted then auto-approved, and the same
+  iteration proceeds to implement. The only human touch-point left is reviewing/merging
+  the draft PR.
 
 ### Choosing `VALIDATE_CMD`
 
