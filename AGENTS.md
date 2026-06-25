@@ -2,8 +2,10 @@
 
 A GitHub-issue/PR-driven Ralph loop. An autonomous harness that pulls tasks from
 GitHub Issues, isolates each in a git worktree/branch, implements them with an
-agent (Claude Code / Codex) guided by engineering skills, gates the result behind
-validation + independent review, and opens a draft Pull Request.
+agent (Claude Code / Codex) guided by engineering skills, then hands the branch to
+the [no-mistakes](https://github.com/kunchenguid/no-mistakes) gate — one `axi run`
+drives review → test → document → lint → push → pr → ci with its own auto-fix loop —
+and stops at an outcome, leaving the open PR for a human to merge.
 
 See `ralph-gh-plan.md` for the full design and `docs/agents/` for skill configuration.
 

@@ -2,9 +2,11 @@
 
 An autonomous AI agent loop that pulls tasks from **GitHub Issues**, isolates each
 one in a **git worktree/branch**, has an AI coding tool implement a single vertical
-slice, gates the result behind **validation + independent review**, and opens a
-**draft Pull Request**. Each issue is handled in a fresh agent context; memory
-persists via git history, issue/PR comments, and `CONTEXT.md`/`AGENTS.md`.
+slice, then hands the branch to the **[no-mistakes](https://github.com/kunchenguid/no-mistakes)
+gate** — one `axi run` drives review → test → document → lint → push → pr → ci with its
+own auto-fix loop — and stops at an **outcome**, leaving the open PR for a human to merge.
+Each issue is handled in a fresh agent context; memory persists via git history,
+issue/PR comments, and `CONTEXT.md`/`AGENTS.md`.
 
 A GitHub-issue/PR-driven fork of [snarktank/ralph](https://github.com/snarktank/ralph),
 based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/), layered with
@@ -19,8 +21,8 @@ the [mattpocock/skills](https://github.com/mattpocock/skills) engineering skills
 | `passes: false/true` in JSON      | Issue `open` + `ready-for-agent` / issue `closed`         |
 | Priority field in JSON            | Labels `P0`/`P1`/`P2`                                      |
 | `progress.txt`                    | Issue/PR comments + `CONTEXT.md`/`AGENTS.md`              |
-| Commit on a story                 | commit → push → **draft PR** → close issue                |
-| Typecheck/test gate               | **GATE 1 validation + GATE 2 independent review**         |
+| Commit on a story                 | implement → **no-mistakes `axi run`** → PR for a human    |
+| Typecheck/test gate               | **no-mistakes gate** (review/test/lint/doc/push/pr/ci)    |
 
 The orchestrator is a standalone script (`scripts/ralph/ralph-gh.sh`). It does **not**
 patch the original `ralph.sh` — see [SYNC.md](./SYNC.md) for why that keeps upstream
@@ -39,11 +41,13 @@ merges conflict-free.
                   │
         agent (claude -p) implements ──▶  skills: tdd / diagnosing-bugs / domain-modeling
                   │
-           GATE 1: validate (VALIDATE_CMD: typecheck + tests)     ← backpressure
-           GATE 2: independent review (separate context, verdict) ← fail-safe
+        commit ──▶  no-mistakes axi run --intent "<issue goal>" --yes
+                    └─ intent → rebase → review → test → document → lint → push → pr → ci
+                       (its own auto-fix loop; validates in its OWN worktree)
                   │
-        PASS → commit → push → gh pr create --draft → gh issue close → remove worktree
-        FAIL → label needs-human → comment rc codes → keep worktree for a human
+        checks-passed → ensure PR has Closes #n → comment/unlabel → remove worktree (PR waits for human)
+        passed        → PR merged → close issue → remove worktree
+        failed/cancelled → axi abort → label needs-human → keep worktree for a human
                   │
         no ready-for-agent issues left → <promise>COMPLETE</promise>
 ```
@@ -56,6 +60,7 @@ merges conflict-free.
 | `git` ≥ 2.30 | `git worktree` per-issue isolation   | `git --version`                  |
 | `jq`         | Issue-selection priority logic       | `jq --version`                   |
 | `claude`     | Default agent backend                | `claude --version`               |
+| `no-mistakes`| The gate (review/test/lint/push/pr/ci) | `no-mistakes doctor`           |
 | `bats`       | The harness's own test suite (dev)   | `npx bats --version`             |
 | `codex`      | Optional alt backend (`AGENT=codex`) | `codex --version`                |
 
@@ -73,14 +78,18 @@ invoking the script from inside that repo's clone and overriding a few env vars:
 ```bash
 cd /path/to/your/target/repo
 
+# One-time: stand up the no-mistakes gate (idempotent), then commit .no-mistakes.yaml to main
+bash /path/to/git-ralph/scripts/setup-no-mistakes.sh
+
 BASE_BRANCH=main \                                  # your repo's default branch
 WORKTREE_ROOT=../your-repo-worktrees \              # where per-issue worktrees go
-VALIDATE_CMD='<your typecheck + test command>' \    # see "Configuration"
 MAX_ITER=1 \
 bash /path/to/git-ralph/scripts/ralph/ralph-gh.sh 1
 ```
 
-`REPO` auto-resolves from the target's `origin` remote. Use this for quick runs.
+`REPO` auto-resolves from the target's `origin` remote. Use this for quick runs. The
+test command lives in `.no-mistakes.yaml` (`commands.test`), not an env var — see
+"Configuration".
 
 ### Option 2 — Vendor into your project (permanent)
 
@@ -95,7 +104,7 @@ cp /path/to/git-ralph/scripts/setup-labels.sh scripts/
 chmod +x scripts/ralph/ralph-gh.sh scripts/setup-labels.sh
 ```
 
-Then customise `scripts/ralph/prompts/{build,review}.md` for your stack.
+Then customise `scripts/ralph/prompts/build.md` and `.no-mistakes.yaml` for your stack.
 
 ### Configure the mattpocock skills (once per repo)
 
@@ -119,6 +128,24 @@ REPO=<owner/repo> bash scripts/setup-labels.sh
 Creates `ready-for-agent`, `needs-human`, `blocked`, `P0`/`P1`/`P2`, and the canonical
 triage labels. Idempotent — safe to re-run.
 
+### Set up the no-mistakes gate (once per repo)
+
+```bash
+bash scripts/setup-no-mistakes.sh        # runs `no-mistakes init` + ensures the daemon
+```
+
+Initializes the local bare gate, installs the `/no-mistakes` agent skill, and starts the
+daemon. Idempotent. Then **commit `.no-mistakes.yaml` to the default branch** — the daemon
+reads `commands.test`/`agent` only from `main` (supply-chain hardening), never from a gated
+feature branch. Install the binary first if needed (`no-mistakes doctor` to verify):
+
+```bash
+# macOS/Linux
+curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
+```
+
 ## Workflow
 
 ### 1. Create a backlog
@@ -141,10 +168,10 @@ In Claude Code, in the target repo:
 DRY_RUN=1 bash scripts/ralph/ralph-gh.sh
 
 # One issue, one pass (recommended first run)
-MAX_ITER=1 VALIDATE_CMD='<your test cmd>' bash scripts/ralph/ralph-gh.sh 1
+MAX_ITER=1 bash scripts/ralph/ralph-gh.sh 1
 
 # Drain the backlog (up to N iterations)
-VALIDATE_CMD='<your test cmd>' bash scripts/ralph/ralph-gh.sh 20
+bash scripts/ralph/ralph-gh.sh 20
 ```
 
 ### 3. What happens each iteration
@@ -152,13 +179,18 @@ VALIDATE_CMD='<your test cmd>' bash scripts/ralph/ralph-gh.sh 20
 1. Select the highest-priority open `ready-for-agent` issue that is not `blocked`
    (`P0 < P1 < P2 < unlabelled`, ties broken by issue number).
 2. Create — or resume — a worktree + branch `agent/<n>-<slug>` from `origin/BASE_BRANCH`.
-3. Run the agent with `prompts/build.md` + the issue body & comments.
-4. **GATE 1** — run `VALIDATE_CMD` in the worktree.
-5. **GATE 2** — run an independent reviewer agent on the diff; parse its verdict.
-6. **PASS** (agent ok + GATE 1 + GATE 2): commit → push → open a draft PR (`Closes #n`)
-   → comment + close the issue → remove the worktree.
-   **FAIL**: label the issue `needs-human`, comment the gate codes, keep the worktree.
-7. When no `ready-for-agent` issues remain, print `<promise>COMPLETE</promise>` and stop.
+3. Run the agent with `prompts/build.md` + the issue body & comments, then commit.
+4. **Gate** — `no-mistakes axi run --intent "<issue goal>" --yes` drives the fixed
+   pipeline (rebase → review → test → document → lint → push → pr → ci) with its own
+   auto-fix loop, in no-mistakes' own worktree.
+5. Dispatch on the parsed **outcome**:
+   - `checks-passed` — CI green, PR open: ensure the PR has `Closes #n`, comment + drop
+     the agent label, remove git-ralph's worktree. **Issue stays open; PR waits for a
+     human to merge.**
+   - `passed` — PR merged: close the issue, remove the worktree.
+   - `failed`/`cancelled` (or a semi-mode `ask-user` gate): `axi abort`, label
+     `needs-human`, comment where to look, keep the worktree.
+6. When no `ready-for-agent` issues remain, print `<promise>COMPLETE</promise>` and stop.
 
 ## Configuration
 
@@ -172,46 +204,43 @@ All via environment variables (with defaults):
 | `HUMAN_LABEL`   | `needs-human`                        | Applied when a gate fails                          |
 | `BLOCKED_LABEL` | `blocked`                            | Issues with this label are skipped                 |
 | `WORKTREE_ROOT` | `../ralph-worktrees`                 | Where per-issue worktrees live                     |
-| `VALIDATE_CMD`  | `npm run typecheck && npm test`      | GATE 1; **set this to your stack** (see below)     |
-| `AGENT`         | `claude`                             | `claude` or `codex`                                |
-| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `build.md` / `review.md` live                |
+| `NM_BIN`        | `no-mistakes`                        | The gate CLI on `PATH`                             |
+| `NM_YES`        | `1`                                  | Autonomous (`axi run --yes`); empty = semi/HITL    |
+| `AGENT`         | `claude`                             | `claude` or `codex` (the IMPLEMENT agent)          |
+| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `build.md` lives                             |
 | `DRY_RUN`       | _(unset)_                            | If set, print the selection and exit               |
 | `MAX_ITER`      | `20` (or first positional arg)       | Max loop iterations                                |
 
-### Choosing `VALIDATE_CMD`
+### The test command (`.no-mistakes.yaml`, not an env var)
 
-This is the single most important setting — it is the feedback loop that stops broken
-code from being finalized. It runs **inside a fresh worktree checkout**, so it must be
-self-contained. Examples:
+The test command moved from `VALIDATE_CMD` into `.no-mistakes.yaml` under `commands.test`,
+because the gate runs it. no-mistakes reads `commands.*`/`agent` from the **default branch
+only** (so a pushed feature branch can't inject shell), so this file must be committed to
+`main`. It runs **inside a fresh checkout** (no `node_modules`/`.venv`), so make it
+self-contained:
 
-```bash
-# Node                                                                        
-VALIDATE_CMD='npm install --silent && npm run typecheck && npm test'
-
-# Python (skip tests needing infra; ensure deps are importable)
-VALIDATE_CMD='python -m pytest -q -m "not integration and not smoke"'
-
-# Go
-VALIDATE_CMD='go build ./... && go test ./...'
+```yaml
+# .no-mistakes.yaml on main
+agent: claude
+commands:
+  test: "npm install --silent && npm run typecheck && npm test"   # Node
+  # test: "python -m pytest -q -m 'not integration and not smoke'" # Python
+  # test: "go build ./... && go test ./..."                        # Go
+auto_fix:
+  review: 3      # the in-scope review->remediate loop that replaced GATE 2
 ```
-
-> ⚠️ **The worktree is a clean checkout** — it has no `node_modules`, no `.venv`, no
-> build artifacts. Either make `VALIDATE_CMD` install/prepare what it needs, or run the
-> harness from a shell where the toolchain (active virtualenv, installed deps) is
-> already on `PATH`. For Python in particular, an editable install (`pip install -e`)
-> resolves imports to the *original* repo path, not the worktree — prefer
-> `python -m pytest` run from the worktree so the worktree's code is on `sys.path`.
 
 ## Key files
 
 | File                              | Purpose                                                      |
 | --------------------------------- | ----------------------------------------------------------- |
-| `scripts/ralph/ralph-gh.sh`       | The loop: select → worktree → agent → gates → finalize      |
+| `scripts/ralph/ralph-gh.sh`       | The loop: select → worktree → agent → commit → `axi run` → dispatch |
 | `scripts/ralph/lib.sh`            | Pure, sourceable logic (the bats-testable "brain")          |
 | `scripts/ralph/prompts/build.md`  | Prompt for the implementing agent                           |
-| `scripts/ralph/prompts/review.md` | Prompt for the independent reviewer                         |
+| `.no-mistakes.yaml`               | Gate config (`commands.test`, `agent`, `auto_fix`) — on `main` |
 | `scripts/ralph/tests/*.bats`      | The harness's own test suite (`npm test`)                   |
 | `scripts/setup-labels.sh`         | Idempotently create the operational + triage labels         |
+| `scripts/setup-no-mistakes.sh`    | Idempotently init the no-mistakes gate + daemon             |
 | `scripts/setup-upstream.sh`       | Wire the `upstream` remote for syncing                      |
 | `AGENTS.md` / `docs/agents/`      | Skill configuration (issue tracker, labels, domain docs)    |
 | `CONTEXT.md`                      | Domain glossary the agents and skills speak in              |
@@ -223,20 +252,30 @@ The decision logic is factored out of the I/O so it can be unit-tested without a
 network or `gh`:
 
 - `select_issue_from_json` — priority/blocked sort → next issue number
-- `parse_review_verdict` — fail-safe verdict parsing (only an exact first-line
-  `REVIEW: PASS` passes)
-- `gate_outcome` — `finalize` only when agent + GATE 1 + GATE 2 all pass
+- `parse_axi_outcome` — fail-safe TOON parser → `checks-passed`/`passed`/`failed`/
+  `cancelled`/`gate` (ambiguous → `failed`)
+- `axi_dispatch` — outcome → harness action (`finalize-pr`/`close-issue`/`needs-human`)
+- `gate_has_ask_user` — true when a semi-mode gate needs a human decision
+- `parse_axi_pr_url` — pull the PR URL out of the run object to attach `Closes #n`
 - `slugify` — branch-name slug from an issue title
 - `repo_slug_from_url` — `owner/repo` from any remote URL
 
-## The two gates
+## The gate (no-mistakes)
 
-- **GATE 1 — validation.** Runs `VALIDATE_CMD` in the worktree. Typecheck + tests are
-  the backpressure that keeps the backlog from compounding broken code.
-- **GATE 2 — independent review.** A *separate* agent context reviews the diff against
-  the issue and must emit `REVIEW: PASS` or `REVIEW: FAIL` on its **first line**.
-  Parsing is **fail-safe**: anything ambiguous is treated as `FAIL`, so code is never
-  merged on an unclear verdict. Finalize requires *all three* (agent rc, GATE 1, GATE 2).
+git-ralph commits the agent's work and hands the branch to **no-mistakes** with a single
+`axi run --intent "<issue goal>" --yes`. That one call drives a fixed, opinionated
+pipeline — `intent → rebase → review → test → document → lint → push → pr → ci` — each
+step with its own **auto-fix loop** (the in-scope review→remediate loop that replaced the
+old GATE 2). The harness no longer parses a verdict or pushes/opens PRs itself; it reads
+the terminal **outcome**:
+
+- `checks-passed` — CI is green and the PR is open, waiting on a human to merge.
+- `passed` — the PR was merged.
+- `failed` / `cancelled` — escalate to a human.
+
+Parsing is **fail-safe**: empty or unrecognized output → `failed` → `needs-human`, so the
+harness never silently finalizes on ambiguous gate output. The gate reads `commands.test`
+and `agent` from the **default branch** copy of `.no-mistakes.yaml`, not the pushed branch.
 
 ## Testing the harness
 
@@ -260,8 +299,9 @@ Each issue should be a single vertical slice completable in one context window. 
 
 ### Feedback loops are mandatory
 
-The harness only works if `VALIDATE_CMD` genuinely catches breakage. No typecheck/tests
-= no backpressure = compounding bad code.
+The harness only works if `.no-mistakes.yaml`'s `commands.test` genuinely catches
+breakage. No tests = no backpressure = compounding bad code. The gate also reviews,
+lints, and watches CI, but the test command is the load-bearing signal.
 
 ### Memory updates
 
@@ -286,7 +326,7 @@ The selector grabs **any** open `ready-for-agent` issue. Before a real run:
   backlog, give it a temporary label and run with that as the agent label:
   ```bash
   gh issue edit <n> --add-label pilot
-  AGENT_LABEL=pilot MAX_ITER=1 VALIDATE_CMD='<...>' bash scripts/ralph/ralph-gh.sh 1
+  AGENT_LABEL=pilot MAX_ITER=1 bash scripts/ralph/ralph-gh.sh 1
   ```
 
 ## Debugging
@@ -313,11 +353,17 @@ gh issue list --label needs-human --state open
   `REPO` defaults to the `origin` remote URL to avoid this; pass `REPO=<owner/repo>`
   explicitly if needed. Also confirm `BASE_BRANCH` matches the repo's default branch
   (e.g. `dev`, not `main`).
-- **GATE 1 always fails on a clean worktree.** The worktree has no installed deps — make
-  `VALIDATE_CMD` install them, or activate the toolchain first (see "Choosing VALIDATE_CMD").
-- **A genuine PASS is reported as `needs-human`.** The reviewer must put `REVIEW: PASS`
-  on its very first line with nothing before it; verdict parsing is intentionally
-  fail-safe. Tighten `prompts/review.md` if a backend rambles before the verdict.
+- **The test step fails on a clean checkout.** The gate runs `commands.test` in a fresh
+  worktree with no installed deps — make it install them (e.g.
+  `npm install --silent && npm test`). See "The test command (`.no-mistakes.yaml`)".
+- **The gate runs the wrong/empty test command.** no-mistakes reads `commands.test` from
+  the **default branch** copy of `.no-mistakes.yaml`, never the pushed branch — commit
+  your change to `main`. If the fetch fails it forces the command empty by design.
+- **`COMPLETE` but the daemon never started.** `scripts/setup-no-mistakes.sh` must have
+  run and `no-mistakes doctor` must pass; the loop calls `no-mistakes daemon start` but
+  needs the binary on `PATH` (`NM_BIN`).
+- **A run stalls as `needs-human`.** Inspect with `no-mistakes axi status` and
+  `no-mistakes axi logs --step <step>`; the worktree is kept for you.
 - **`bad interpreter` / `command not found` running a script on Windows.** CRLF line
   endings; `.gitattributes` pins `*.sh` to LF — re-check out, or fix your editor.
 

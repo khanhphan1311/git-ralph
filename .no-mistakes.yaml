@@ -1,0 +1,21 @@
+# .no-mistakes.yaml — repo config for the no-mistakes gate (#23).
+#
+# SECURITY: the daemon reads the code-executing fields (`commands.*`, `agent`) from the
+# DEFAULT branch only (e.g. origin/main), never from a pushed feature branch. So this
+# file must be committed to `main` for `commands.test` to take effect. That is what lets
+# git-ralph delete its own GATE 1 — the test command moved here.
+
+# Pipeline agent for review/test/document/lint/ci. One agent per repo (no per-step
+# model — that limitation is upstream; per-step model stays on the implement stage, #21).
+agent: claude
+
+commands:
+  # Was VALIDATE_CMD. Worktrees are clean checkouts with no node_modules, so install
+  # first. no-mistakes runs this as the test step's baseline and checks the exit code.
+  test: "npm install --silent && npm test"
+
+auto_fix:
+  # Maps the old REVIEW_MAX_ITER knob: how many fix rounds the review step may take
+  # before pausing. git-ralph drives `axi run --yes`, which auto-resolves gates; this
+  # bounds the in-scope review->remediate loop that replaced GATE 2.
+  review: 3
