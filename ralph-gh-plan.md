@@ -19,17 +19,28 @@ to-prd / to-issues (mattpocock)        ──>  GitHub Issues (PRD cha + sub-iss
                           │
         agent (claude -p) implement  ──>  skill: tdd / diagnosing-bugs / domain-modeling
                           │
-                   GATE 1: validate (typecheck + test)         ← backpressure
-                   GATE 2: independent review (context riêng)  ← "diff-verifier"
+        commit ──> no-mistakes axi run --intent "<issue goal>" --yes
+                   └─ intent → rebase → review → test → document → lint → push → pr → ci
                           │
-        PASS → commit → push → gh pr create --draft → gh issue close
-        FAIL → label needs-human → comment log → giữ worktree cho người xem
+        checks-passed → bảo đảm PR có Closes #n → comment/bỏ nhãn → xoá worktree (PR chờ người merge)
+        passed        → PR đã merge → đóng issue → xoá worktree
+        failed/cancelled → axi abort → label needs-human → giữ worktree cho người xem
                           │
               hết issue ready-for-agent → <promise>COMPLETE</promise>
 ```
 
 Khác biệt so với snarktank gốc: **nguồn sự thật = GitHub** (không `prd.json`), **isolation = worktree/branch**,
-**đầu ra = PR**, **engineering = skill mattpocock**, **thêm reviewer độc lập**.
+**đầu ra = PR**, **engineering = skill mattpocock**, **gate = no-mistakes**.
+
+> **Cập nhật (#23): no-mistakes là gate backend.** GATE 1 (validate) + GATE 2 (review độc
+> lập) + push + draft PR của thiết kế gốc bên dưới đã được thay bằng MỘT lời gọi headless
+> `no-mistakes axi run --intent .. --yes`. no-mistakes chạy pipeline cố định
+> `intent → rebase → review → test → document → lint → push → pr → ci` với auto-fix loop
+> riêng, rồi dừng ở một `outcome`. git-ralph chỉ parse outcome (TOON, fail-safe) rồi
+> gắn nhãn/comment/cleanup; KHÔNG tự merge. Module 2 (verdict parser) và Module 6
+> (validation gate) bị xoá; `commands.test` cũ (= `VALIDATE_CMD`) chuyển vào
+> `.no-mistakes.yaml` trên default branch. Các Module/đoạn GATE bên dưới giữ lại làm
+> lịch sử thiết kế — đọc chúng qua lăng kính bản cập nhật này.
 
 ---
 

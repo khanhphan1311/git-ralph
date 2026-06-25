@@ -29,30 +29,72 @@ slugify() {
     | cut -c1-40
 }
 
-# gate_outcome <agent_rc> <gate_rc> [review_rc]
-# Pure decision: prints "finalize" only when every gate passed (rc 0), else
-# "needs-human". review_rc defaults to 0 so it's a no-op until #5 wires GATE 2.
-gate_outcome() {
-  local agent_rc="$1" gate_rc="$2" review_rc="${3:-0}"
-  if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ] && [ "$review_rc" -eq 0 ]; then
-    echo finalize
-  else
-    echo needs-human
+# parse_axi_outcome
+# Reads `no-mistakes axi run` TOON on stdin and prints a single outcome token.
+# The pipeline emits a `run:` object then EXACTLY ONE of a top-level `outcome:` key
+# (`checks-passed`, `passed`, `failed`, `cancelled`, ...) or a top-level `gate:` block
+# (a semi-mode approval pause). Precedence: an `outcome:` wins; else a `gate:` -> "gate";
+# else fail-safe "failed" (empty / error / unrecognized) so the harness escalates to a
+# human and never silently finalizes. Keys are matched ONLY at column 0 — finding
+# descriptions legitimately contain the words "outcome"/"gate" and must not be mistaken
+# for the terminal key.
+parse_axi_outcome() {
+  local line outcome="" gate=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      outcome:*)
+        [ -n "$outcome" ] && continue
+        outcome="${line#outcome:}"
+        outcome="$(printf '%s' "$outcome" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+        ;;
+      gate:*) gate=1 ;;
+    esac
+  done
+  if [ -n "$outcome" ]; then printf '%s\n' "$outcome"
+  elif [ -n "$gate" ]; then echo gate
+  else echo failed
   fi
 }
 
-# parse_review_verdict
-# Reads a reviewer's output on stdin and prints "PASS" or "FAIL". Fail-safe: PASS
-# only when the FIRST non-empty line, trimmed and CR-stripped, equals exactly
-# "REVIEW: PASS". Anything else — empty, mid-text occurrence, extra words — is FAIL.
-parse_review_verdict() {
-  local line first=""
+# gate_has_ask_user
+# Reads axi TOON on stdin; exits 0 when a gate finding carries an `ask-user` action,
+# else non-zero. Gate finding rows are CSV `id,severity,file,action,description`, so an
+# ask-user action surfaces as the `,ask-user,` token. Matching the token errs toward
+# escalation (the safe direction) if a description ever embeds it. Used in semi mode to
+# route ask-user gates to a human while auto-fix gates get an `axi respond --action fix`.
+gate_has_ask_user() {
+  grep -q ',ask-user,'
+}
+
+# parse_axi_pr_url
+# Reads axi TOON on stdin and prints the pull-request URL from the `run:` object's
+# `pr:` field (quotes stripped), or nothing when absent/empty. The harness uses it to
+# attach `Closes #n` to the PR no-mistakes opened. Only a real `pr:` key (any indent)
+# matches — substrings like `expr:` do not — and the first non-empty value wins.
+parse_axi_pr_url() {
+  local line v
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
-    line="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-    if [ -n "$line" ]; then first="$line"; break; fi
+    if printf '%s' "$line" | grep -qE '^[[:space:]]*pr:[[:space:]]'; then
+      v="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*pr:[[:space:]]*//; s/^"//; s/"$//')"
+      if [ -n "$v" ]; then printf '%s\n' "$v"; return 0; fi
+    fi
   done
-  if [ "$first" = "REVIEW: PASS" ]; then echo PASS; else echo FAIL; fi
+  return 0
+}
+
+# axi_dispatch <outcome-token>
+# Pure decision: maps a parsed axi outcome onto the harness action.
+#   checks-passed -> finalize-pr  (CI green, PR open; add Closes #n + label, leave merge to a human)
+#   passed        -> close-issue  (PR merged/closed; close the issue, clean up)
+#   * (failed/cancelled/gate/blocked/unknown/empty) -> needs-human (fail-safe)
+axi_dispatch() {
+  case "${1:-}" in
+    checks-passed) echo finalize-pr ;;
+    passed)        echo close-issue ;;
+    *)             echo needs-human ;;
+  esac
 }
 
 # harness_version

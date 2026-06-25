@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # ralph-gh.sh — GitHub-issue/PR-driven Ralph loop + mattpocock skills.
 #
-# Walking skeleton (slice #3): select -> worktree -> agent -> finalize (happy path).
-# Quality gates (validation, independent review) are added in slices #4/#5.
+# git-ralph owns: select issue -> worktree -> implement (TDD) -> commit.
+# no-mistakes owns the gate: a single `axi run` drives rebase -> review -> test ->
+# document -> lint -> push -> pr -> ci (with its own auto-fix loop) and stops at a
+# terminal outcome. git-ralph reads that outcome and labels/comments/cleans up; it
+# never merges. See https://github.com/kunchenguid/no-mistakes (#23).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,30 +22,36 @@ AGENT_LABEL="${AGENT_LABEL:-ready-for-agent}"
 HUMAN_LABEL="${HUMAN_LABEL:-needs-human}"
 BLOCKED_LABEL="${BLOCKED_LABEL:-blocked}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
-VALIDATE_CMD="${VALIDATE_CMD:-npm run typecheck && npm test}"
 AGENT="${AGENT:-claude}"
-# Per-stage models (#21 Delta B). Plan/review want a strong reasoner; implement is mostly
-# mechanical so a cheaper/faster model suffices. Routed via model_flag at each invocation.
-PLAN_MODEL="${PLAN_MODEL:-claude-opus-4-8}"
-CODE_MODEL="${CODE_MODEL:-claude-sonnet-4-6}"
-REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-4-8}"
 PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
+# no-mistakes is the gate. NM_BIN is the CLI; NM_YES=1 (default) runs the autonomous
+# path (`axi run --yes`, auto-resolve every gate). Empty NM_YES selects the semi/HITL
+# path: a gate pauses the harness and escalates to a human instead of auto-resolving.
+NM_BIN="${NM_BIN:-no-mistakes}"
+NM_YES="${NM_YES:-1}"
 DRY_RUN="${DRY_RUN:-}"
 MAX_ITER="${1:-20}"
 
 log() { printf '\033[1;34m[ralph]\033[0m %s\n' "$*"; }
 
-# agent_run <prompt-file> [model] — run the configured agent with the prompt's contents,
-# selecting a per-stage model when one is given (claude only; no-op for codex).
+# agent_run <prompt-file> — run the configured agent with the prompt's contents.
 agent_run() {
-  local prompt="$1" model="${2:-}"
   case "$AGENT" in
-    claude)
-      # shellcheck disable=SC2046  # model_flag emits 0-or-2 intentional words.
-      claude -p $(model_flag "$AGENT" "$model") --dangerously-skip-permissions "$(cat "$prompt")" ;;
-    codex)  codex exec --yolo - < "$prompt" ;;
+    claude) claude -p --dangerously-skip-permissions "$(cat "$1")" ;;
+    codex)  codex exec --yolo - < "$1" ;;
     *) echo "Unsupported AGENT: $AGENT" >&2; return 2 ;;
   esac
+}
+
+# ensure_daemon — best-effort: confirm the no-mistakes CLI is present and the gate
+# daemon is up before the loop starts (AC 1). `daemon start` is idempotent and
+# refreshes a stale managed service, so it is safe to call every run.
+ensure_daemon() {
+  if ! command -v "$NM_BIN" >/dev/null 2>&1; then
+    log "no-mistakes ($NM_BIN) not on PATH — run scripts/setup-no-mistakes.sh first."
+    return 1
+  fi
+  "$NM_BIN" daemon start >/dev/null 2>&1 || true
 }
 
 # select_next_issue — highest-priority open ready-for-agent issue, not blocked.
@@ -52,10 +61,32 @@ select_next_issue() {
     | select_issue_from_json "$BLOCKED_LABEL"
 }
 
+# build_intent <num> — the user's GOAL for no-mistakes' review, not a diff summary.
+# Issue body + comments carry the decisions/tradeoffs (including the harness's own
+# [Kickoff]/[Decision] notes), which is exactly what review uses to tell deliberate
+# choices apart from mistakes.
+build_intent() {
+  local num="$1"
+  printf 'Resolve GitHub issue #%s. The goal, decisions, and tradeoffs follow.\n\n' "$num"
+  gh issue view "$num" --repo "$REPO" --comments
+}
+
+# run_axi <worktree> <intent> — drive the no-mistakes gate for the committed branch in
+# <worktree>, blocking until a terminal outcome (or, in semi mode, the first gate).
+# stdout (TOON) is captured for the parser; stderr (progress) flows to the terminal.
+run_axi() {
+  local wt="$1" intent="$2"
+  if [ -n "$NM_YES" ]; then
+    ( cd "$wt" && "$NM_BIN" axi run --intent "$intent" --yes )
+  else
+    ( cd "$wt" && "$NM_BIN" axi run --intent "$intent" )
+  fi
+}
+
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.
 run_once() {
-  local num title slug branch wt build_prompt issue_ctx agent_rc gate_rc
-  local review_rc review_prompt diff_text verdict
+  local num title slug branch wt build_prompt issue_ctx agent_rc
+  local intent axi_out outcome action pr_url
 
   num="$(select_next_issue || true)"
   if [ -z "${num:-}" ]; then
@@ -81,65 +112,94 @@ run_once() {
   build_prompt="$(mktemp)"
   { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/build.md"; echo; echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
 
-  log "Implement (#$num) with model: ${CODE_MODEL:-<agent default>}"
-  set +e; ( cd "$wt" && agent_run "$build_prompt" "$CODE_MODEL" ); agent_rc=$?; set -e
-
-  # GATE 1 — validation. Only run it if the agent itself didn't error out.
-  gate_rc=0
-  if [ "$agent_rc" -eq 0 ]; then
-    log "GATE 1: validating (#$num) -> $VALIDATE_CMD"
-    set +e; ( cd "$wt" && bash -c "$VALIDATE_CMD" ); gate_rc=$?; set -e
+  set +e; ( cd "$wt" && agent_run "$build_prompt" ); agent_rc=$?; set -e
+  if [ "$agent_rc" -ne 0 ]; then
+    log "FAIL #$num (agent rc=$agent_rc) -> needs-human"
+    mark_needs_human "$num" "$branch" "$wt" "agent rc=$agent_rc"
+    return 0
   fi
 
-  # GATE 2 — independent review. A separate reviewer agent reads the diff and emits
-  # a verdict; fail-safe parsing means only an explicit first-line PASS clears it.
-  review_rc=1
-  if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ]; then
-    log "GATE 2: independent review (#$num) with model: ${REVIEW_MODEL:-<agent default>}"
-    diff_text="$(cd "$wt" && git add -A >/dev/null 2>&1 || true; git diff "origin/${BASE_BRANCH}")"
-    review_prompt="$(mktemp)"
-    { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/review.md"; echo; echo "## ISSUE #$num"; echo "$issue_ctx";
-      echo; echo "## DIFF (origin/${BASE_BRANCH} -> worktree)";
-      echo '```diff'; printf '%s\n' "$diff_text"; echo '```'; } > "$review_prompt"
-    verdict="$(cd "$wt" && agent_run "$review_prompt" "$REVIEW_MODEL" || true)"
-    log "Review verdict line: $(printf '%s' "$verdict" | head -1)"
-    [ "$(parse_review_verdict <<<"$verdict")" = "PASS" ] && review_rc=0
+  # Commit the agent's work — `axi run` refuses an uncommitted tree, and a branch with
+  # no diff against the base has nothing to gate.
+  ( cd "$wt"; git add -A; git commit -m "feat: resolve #$num — $title" >/dev/null 2>&1 || true )
+  if ( cd "$wt" && git diff --quiet "origin/${BASE_BRANCH}" ); then
+    log "FAIL #$num (agent produced no changes) -> needs-human"
+    mark_needs_human "$num" "$branch" "$wt" "no diff against origin/${BASE_BRANCH}"
+    return 0
   fi
 
-  if [ "$(gate_outcome "$agent_rc" "$gate_rc" "$review_rc")" = "finalize" ]; then
-    log "PASS #$num (agent=$agent_rc gate=$gate_rc review=$review_rc) -> finalize"
-    finalize "$num" "$title" "$branch" "$wt"
-  else
-    log "FAIL #$num (agent=$agent_rc gate=$gate_rc review=$review_rc) -> needs-human"
-    mark_needs_human "$num" "$branch" "$wt" "agent=$agent_rc, gate=$gate_rc, review=$review_rc"
+  # The gate: one headless `axi run` replaces GATE 1 (validate) + GATE 2 (review) +
+  # push + PR. no-mistakes runs its fixed pipeline with its own auto-fix loop.
+  log "GATE: no-mistakes axi run (#$num, yes=${NM_YES:-0})"
+  intent="$(build_intent "$num")"
+  set +e; axi_out="$(run_axi "$wt" "$intent")"; set -e
+
+  outcome="$(parse_axi_outcome <<<"$axi_out")"
+  if [ "$outcome" = "gate" ] && [ -z "$NM_YES" ]; then
+    # Semi/HITL path: a human owns the gate. Relay the findings and escalate.
+    log "GATE paused (#$num) -> needs-human (semi mode)"
+    mark_needs_human "$num" "$branch" "$wt" "gate awaiting approval (semi mode)"
+    return 0
   fi
+
+  action="$(axi_dispatch "$outcome")"
+  log "outcome=$outcome -> $action (#$num)"
+  case "$action" in
+    finalize-pr)
+      pr_url="$(parse_axi_pr_url <<<"$axi_out")"
+      finalize_pr "$num" "$pr_url" "$branch" "$wt" ;;
+    close-issue)
+      close_issue_done "$num" "$branch" "$wt" ;;
+    *)
+      mark_needs_human "$num" "$branch" "$wt" "axi outcome=$outcome" ;;
+  esac
 }
 
-# mark_needs_human — failure path: flag for a human, log the gate codes, KEEP the
-# worktree so it can be inspected. Does not push, PR, or close.
+# finalize_pr — success path for `checks-passed`: CI is green and the PR is open,
+# waiting on a human to merge. Make sure the PR body carries `Closes #n` (no-mistakes
+# may not have included it), comment the issue with the PR link, drop the agent label,
+# and remove git-ralph's own worktree. The issue stays OPEN — GitHub closes it when the
+# human merges. git-ralph never merges (kept Out-of-Scope from #1).
+finalize_pr() {
+  local num="$1" pr_url="$2" branch="$3" wt="$4" body
+  if [ -n "$pr_url" ]; then
+    body="$(gh pr view "$pr_url" --repo "$REPO" --json body -q .body 2>/dev/null || true)"
+    case "$body" in
+      *"Closes #$num"*|*"closes #$num"*) : ;;
+      *) gh pr edit "$pr_url" --repo "$REPO" \
+           --body "$(printf '%s\n\nCloses #%s' "$body" "$num")" >/dev/null 2>&1 || true ;;
+    esac
+    gh issue comment "$num" --repo "$REPO" \
+      --body "no-mistakes gate passed — CI green. PR ready for human review/merge: $pr_url"
+  else
+    gh issue comment "$num" --repo "$REPO" \
+      --body "no-mistakes gate passed — CI green. PR ready for human review/merge."
+  fi
+  gh issue edit "$num" --repo "$REPO" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+  safe_worktree_remove "$wt"
+}
+
+# close_issue_done — terminal `passed`: the PR was merged/closed. Close the issue (in
+# case no `Closes #n` auto-closed it), drop the agent label, and clean up the worktree.
+close_issue_done() {
+  local num="$1" branch="$2" wt="$3"
+  gh issue comment "$num" --repo "$REPO" \
+    --body "no-mistakes pipeline passed and the PR merged. Done by ralph-gh (branch \`$branch\`)."
+  gh issue edit "$num" --repo "$REPO" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+  gh issue close "$num" --repo "$REPO" 2>/dev/null || true
+  safe_worktree_remove "$wt"
+}
+
+# mark_needs_human — failure/escalation path. Reap any orphaned gate run for the branch
+# (`axi abort` is a no-op when none is active), flag the issue for a human, log where to
+# look, and KEEP the worktree for inspection. Does not push, PR, merge, or close.
 mark_needs_human() {
   local num="$1" branch="$2" wt="$3" reason="$4"
+  [ -d "$wt" ] && ( cd "$wt" && "$NM_BIN" axi abort >/dev/null 2>&1 || true )
   gh issue edit "$num" --repo "$REPO" \
     --add-label "$HUMAN_LABEL" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
   gh issue comment "$num" --repo "$REPO" \
-    --body "ralph-gh stopped ($reason). Inspect branch \`$branch\` / worktree \`$wt\`."
-}
-
-# finalize — commit, push, open a draft PR, close the issue, remove the worktree.
-finalize() {
-  local num="$1" title="$2" branch="$3" wt="$4"
-  ( cd "$wt"
-    git add -A
-    git commit -m "feat: resolve #$num — $title" || true
-    git push -u origin "$branch"
-    gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
-      --title "Resolve #$num: $title" --body "Closes #$num" --draft 2>/dev/null \
-      || gh pr edit "$branch" --repo "$REPO" >/dev/null 2>&1 || true
-  )
-  gh issue comment "$num" --repo "$REPO" --body "Done by ralph-gh. Branch \`$branch\`, draft PR opened."
-  gh issue edit "$num" --repo "$REPO" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
-  gh issue close "$num" --repo "$REPO"
-  safe_worktree_remove "$wt"
+    --body "ralph-gh stopped ($reason). Inspect branch \`$branch\` / worktree \`$wt\`; see \`no-mistakes axi status\` and \`no-mistakes axi logs --step <step>\`."
 }
 
 # safe_worktree_remove <worktree-path>
@@ -176,6 +236,7 @@ dry_run() {
 }
 
 main() {
+  ensure_daemon || { log "Gate unavailable — aborting loop."; return 1; }
   local iter=0
   while (( iter < MAX_ITER )); do
     iter=$((iter + 1)); log "iteration $iter/$MAX_ITER"
