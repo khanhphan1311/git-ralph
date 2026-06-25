@@ -2,21 +2,39 @@
 # lib.sh — pure, sourceable logic for the Ralph harness. No network, no side effects.
 # ralph-gh.sh sources this and wires the real gh/git I/O around these functions.
 
-# select_issue_from_json [blocked_label]
-# Reads `gh issue list --json number,labels` output on stdin, drops issues carrying
-# the blocked label, sorts by priority (P0<P1<P2<unlabelled) then issue number, and
-# prints the chosen issue number (or nothing if none qualify).
+# select_issue_from_json [blocked_label] [awaiting_label] [approved_label]
+# Reads `gh issue list --json number,labels` output on stdin and picks the next issue
+# to work. Drops `blocked` issues, and `awaiting-plan` issues UNLESS they also carry
+# `plan-approved` (a human approving by adding plan-approved on top of awaiting-plan
+# must still be selectable). Among the rest, plan-approved issues rank first (finish what
+# a human already vetted), then priority (P0<P1<P2<unlabelled), then issue number. Prints
+# the chosen issue number (or nothing if none qualify).
 select_issue_from_json() {
   local blk="${1:-${BLOCKED_LABEL:-blocked}}"
-  jq -r --arg blk "$blk" '
+  local awaiting="${2:-${AWAITING_PLAN_LABEL:-awaiting-plan}}"
+  local approved="${3:-${PLAN_APPROVED_LABEL:-plan-approved}}"
+  jq -r --arg blk "$blk" --arg awaiting "$awaiting" --arg approved "$approved" '
     def prio(ls): (ls | map(.name)
       | if index("P0") then 0
         elif index("P1") then 1
         elif index("P2") then 2
         else 3 end);
-    map(select(.labels | map(.name) | index($blk) | not))
-    | sort_by(prio(.labels), .number)
+    def approved_rank(ls): (ls | map(.name) | if index($approved) then 0 else 1 end);
+    map(select(.labels | map(.name) as $n
+      | (($n | index($blk)) | not)
+        and ((($n | index($awaiting)) | not) or (($n | index($approved)) != null))))
+    | sort_by(approved_rank(.labels), prio(.labels), .number)
     | (.[0].number // empty)'
+}
+
+# issue_stage_from_labels [approved_label]
+# Reads a single issue's labels JSON (the `.labels` array) on stdin and prints which
+# stage the loop should enter: "implement" when a human has already approved the plan
+# (the approved label is present), otherwise "plan" (the issue still needs a plan).
+issue_stage_from_labels() {
+  local approved="${1:-${PLAN_APPROVED_LABEL:-plan-approved}}"
+  jq -r --arg approved "$approved" '
+    if (map(.name) | index($approved)) then "implement" else "plan" end'
 }
 
 # slugify <text>

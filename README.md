@@ -193,21 +193,28 @@ bash scripts/ralph/ralph-gh.sh 20
 
 ### 3. What happens each iteration
 
-1. Select the highest-priority open `ready-for-agent` issue that is not `blocked`
-   (`P0 < P1 < P2 < unlabelled`, ties broken by issue number).
+1. Select the next issue: `plan-approved` first, then the highest-priority open
+   `ready-for-agent` that is not `blocked`/`awaiting-plan` (`P0 < P1 < P2 < unlabelled`,
+   ties broken by issue number).
 2. Create — or resume — a worktree + branch `agent/<n>-<slug>` from `origin/BASE_BRANCH`.
-3. Run the agent with `prompts/build.md` + the issue body & comments, then commit.
-4. **Gate** — `no-mistakes axi run --intent "<issue goal>" --yes` drives the fixed
+3. **Plan** (fresh issues only; `plan-approved` issues skip to 4) — a `PLAN_MODEL` agent
+   writes a short plan, posted to the issue as the canonical `<!-- ralph:plan -->` comment.
+   - **Semi** (default, `AUTO_PLAN=0`): park the issue on `awaiting-plan` and move on; a
+     human approves by adding `plan-approved`.
+   - **Full-auto** (`AUTO_PLAN=1`): auto-approve and implement inline.
+4. Run the implement agent (`CODE_MODEL`) with `prompts/build.md` + the approved plan +
+   the issue body & comments, then commit.
+5. **Gate** — `no-mistakes axi run --intent "<issue goal>" --yes` drives the fixed
    pipeline (rebase → review → test → document → lint → push → pr → ci) with its own
    auto-fix loop, in no-mistakes' own worktree.
-5. Dispatch on the parsed **outcome**:
+6. Dispatch on the parsed **outcome**:
    - `checks-passed` — CI green, PR open: ensure the PR has `Closes #n`, comment + drop
      the agent label, remove git-ralph's worktree. **Issue stays open; PR waits for a
      human to merge.**
    - `passed` — PR merged: close the issue, remove the worktree.
    - `failed`/`cancelled` (or a semi-mode `ask-user` gate): `axi abort`, label
      `needs-human`, comment where to look, keep the worktree.
-6. When no `ready-for-agent` issues remain, print `<promise>COMPLETE</promise>` and stop.
+7. When no actionable issues remain, print `<promise>COMPLETE</promise>` and stop.
 
 ## Configuration
 
@@ -223,10 +230,30 @@ All via environment variables (with defaults):
 | `WORKTREE_ROOT` | `../ralph-worktrees`                 | Where per-issue worktrees live                     |
 | `NM_BIN`        | `no-mistakes`                        | The gate CLI on `PATH`                             |
 | `NM_YES`        | `1`                                  | Autonomous (`axi run --yes`); empty = semi/HITL    |
-| `AGENT`         | `claude`                             | `claude` or `codex` (the IMPLEMENT agent)          |
-| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `build.md` lives                             |
-| `DRY_RUN`       | _(unset)_                            | If set, print the selection and exit               |
+| `AGENT`         | `claude`                             | `claude` or `codex` (the plan/implement agent)     |
+| `AUTO_PLAN`     | `0`                                  | `1` = auto-approve the plan inline; `0` = semi (await human) |
+| `PLAN_MODEL`    | `claude-opus-4-8`                    | Model for the Plan stage (strong reasoner)         |
+| `CODE_MODEL`    | `claude-sonnet-4-6`                  | Model for Implement (cheaper/faster)               |
+| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` live                  |
+| `DRY_RUN`       | _(unset)_                            | If set, print the selection (and stage) and exit   |
 | `MAX_ITER`      | `20` (or first positional arg)       | Max loop iterations                                |
+
+### Plan stage & approval (semi vs `AUTO_PLAN`)
+
+Before implementing, a `PLAN_MODEL` agent writes a short plan and the harness posts it to
+the issue as an `<!-- ralph:plan -->` comment (the canonical, audit-stable record).
+
+- **Semi mode** (default, `AUTO_PLAN=0`): the issue is parked on `awaiting-plan` and the
+  loop moves on. A human reviews the plan comment and approves by **adding the
+  `plan-approved` label** (no need to remove `awaiting-plan`). On a later pass the selector
+  picks it up first and implements straight against the approved plan.
+- **Full-auto** (`AUTO_PLAN=1`): the plan is posted then auto-approved, and the same
+  iteration proceeds to implement. The only human touch-point left is reviewing/merging
+  the gate's PR.
+
+Per-stage models: Plan uses `PLAN_MODEL`, Implement uses `CODE_MODEL` (claude only; codex
+ignores them). The gate's own stages (review/test/lint/…) run on no-mistakes' configured
+agent — see `.no-mistakes.yaml`.
 
 ### The test command (`.no-mistakes.yaml`, not an env var)
 
@@ -253,6 +280,7 @@ auto_fix:
 | --------------------------------- | ----------------------------------------------------------- |
 | `scripts/ralph/ralph-gh.sh`       | The loop: select → worktree → agent → commit → `axi run` → dispatch |
 | `scripts/ralph/lib.sh`            | Pure, sourceable logic (the bats-testable "brain")          |
+| `scripts/ralph/prompts/plan.md`   | Prompt for the Plan stage agent                             |
 | `scripts/ralph/prompts/build.md`  | Prompt for the implementing agent                           |
 | `.no-mistakes.yaml`               | Gate config (`commands.test`, `agent`, `auto_fix`) — on `main` |
 | `scripts/ralph/tests/*.bats`      | The harness's own test suite (`npm test`)                   |
@@ -268,7 +296,10 @@ auto_fix:
 The decision logic is factored out of the I/O so it can be unit-tested without a
 network or `gh`:
 
-- `select_issue_from_json` — priority/blocked sort → next issue number
+- `select_issue_from_json` — `plan-approved`-first, blocked/awaiting-plan exclusion,
+  priority sort → next issue number
+- `issue_stage_from_labels` — `plan` vs `implement` from an issue's labels
+- `model_flag` — per-stage `--model` flag for the agent runner (claude)
 - `parse_axi_outcome` — fail-safe TOON parser → `checks-passed`/`passed`/`failed`/
   `cancelled`/`gate` (ambiguous → `failed`)
 - `axi_dispatch` — outcome → harness action (`finalize-pr`/`close-issue`/`needs-human`)
