@@ -17,8 +17,8 @@ Issues and PRDs live as GitHub issues on `khanhphan1311/git-ralph`, driven via t
 ### Triage labels
 
 Canonical triage roles map 1:1 to label strings; this harness also adds the
-operational labels `ready-for-agent`, `needs-human`, `blocked`, and priorities
-`P0`/`P1`/`P2`. See `docs/agents/triage-labels.md`.
+operational labels `ready-for-agent`, `needs-human`, `blocked`, `awaiting-plan`,
+`plan-approved`, and priorities `P0`/`P1`/`P2`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

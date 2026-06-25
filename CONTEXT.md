@@ -30,10 +30,10 @@ proposals in these terms.
   semi mode. The plan is posted to the issue either way, for audit.
 - **Agent runner** — the `claude`/`codex` abstraction that runs a prompt inside a worktree.
 - **GATE 1 / validation gate** — runs `VALIDATE_CMD` (typecheck + tests) in the worktree.
-- **GATE 2 / independent review** — a separate reviewer agent reads the diff and
-  emits a **verdict** on its first line.
-- **Verdict** — `REVIEW: PASS` or `REVIEW: FAIL`. Parsing is fail-safe: anything
-  ambiguous is treated as `FAIL`.
+- **GATE 2 / review→remediate loop** — after GATE 1 and opening the draft PR, an
+  independent `REVIEW_MODEL` reviewer reads the diff and emits **scoped findings**. The
+  loop auto-fixes in-scope findings, files out-of-scope ones, and re-reviews — up to
+  `REVIEW_MAX_ITER` rounds — until `review_status` is `CLEAN`.
 - **Scoped finding** — a single review issue tagged `scope: "in"` (caused by this diff:
   bug, missing test, acceptance-criteria miss, regression, leaked secret) or
   `scope: "out"` (pre-existing / unrelated / belongs to another issue). Emitted by the
@@ -41,9 +41,15 @@ proposals in these terms.
 - **review_status** — pure classifier over reviewer output: `REMEDIATE` (>=1 in-scope
   finding → auto-fix), `CLEAN` (no in-scope findings, or a bare `REVIEW: CLEAN` line),
   or `UNCLEAN` (fail-safe: broken/missing findings JSON — never clears the PR).
-- **Finalize** — the success path: commit → push → open draft PR (`Closes #n`) →
-  close issue → remove worktree. Runs only when agent rc=0 AND GATE 1 AND GATE 2 pass.
-- **needs-human** — the failure path: label the issue, comment the gate result codes,
+- **Remediate** — feed the in-scope findings to a `CODE_MODEL` agent to fix on the same
+  branch, re-run GATE 1, push, and re-review. In-scope = auto-fixed; out-of-scope = filed
+  as new `needs-triage` issues that do NOT block the current PR.
+- **REVIEW_MAX_ITER** — cap (default 3) on review→remediate rounds. Reaching it with
+  in-scope findings still present → `needs-human` (worktree kept).
+- **Finalize (clean)** — the success path once review is CLEAN: comment → drop agent
+  label → close issue → remove worktree. The **draft PR is left for a human to merge**
+  (no auto-undraft / auto-merge). The draft PR itself is opened earlier, at stage 5.
+- **needs-human** — the failure path: label the issue, comment the reason,
   keep the worktree for inspection.
 - **COMPLETE** — `<promise>COMPLETE</promise>`, printed when no `ready-for-agent`
   issues remain.

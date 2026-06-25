@@ -37,15 +37,22 @@ merges conflict-free.
                   │
         git worktree add -B agent/<n>-<slug>   (isolation, from origin/BASE_BRANCH)
                   │
-        agent (claude -p) implements ──▶  skills: tdd / diagnosing-bugs / domain-modeling
+        PLAN stage (PLAN_MODEL) → post plan comment → semi: await human / AUTO_PLAN: inline
                   │
-           GATE 1: validate (VALIDATE_CMD: typecheck + tests)     ← backpressure
-           GATE 2: independent review (separate context, verdict) ← fail-safe
+        agent (CODE_MODEL) implements ──▶  skills: tdd / diagnosing-bugs / domain-modeling
                   │
-        PASS → commit → push → gh pr create --draft → gh issue close → remove worktree
-        FAIL → label needs-human → comment rc codes → keep worktree for a human
+           GATE 1: validate (VALIDATE_CMD: typecheck + tests)      ← backpressure
                   │
-        no ready-for-agent issues left → <promise>COMPLETE</promise>
+        open draft PR (Closes #n)
+                  │
+           GATE 2: review (REVIEW_MODEL) → scoped findings ─┐      ← fail-safe
+                  │   in-scope → remediate (CODE_MODEL) → re-GATE 1 → re-review (≤ REVIEW_MAX_ITER)
+                  │   out-of-scope → file needs-triage issue (does not block the PR)
+                  ▼
+        CLEAN → comment → gh issue close → remove worktree (draft PR left for human merge)
+        exhausted REVIEW_MAX_ITER → label needs-human → keep worktree for a human
+                  │
+        no actionable issues left → <promise>COMPLETE</promise>
 ```
 
 ## Prerequisites
@@ -95,7 +102,7 @@ cp /path/to/git-ralph/scripts/setup-labels.sh scripts/
 chmod +x scripts/ralph/ralph-gh.sh scripts/setup-labels.sh
 ```
 
-Then customise `scripts/ralph/prompts/{build,review}.md` for your stack.
+Then customise `scripts/ralph/prompts/{plan,build,review,remediate}.md` for your stack.
 
 ### Configure the mattpocock skills (once per repo)
 
@@ -116,8 +123,8 @@ Choose **issue tracker = GitHub**. This writes an `## Agent skills` block into
 REPO=<owner/repo> bash scripts/setup-labels.sh
 ```
 
-Creates `ready-for-agent`, `needs-human`, `blocked`, `P0`/`P1`/`P2`, and the canonical
-triage labels. Idempotent — safe to re-run.
+Creates `ready-for-agent`, `needs-human`, `blocked`, `awaiting-plan`, `plan-approved`,
+`P0`/`P1`/`P2`, and the canonical triage labels. Idempotent — safe to re-run.
 
 ## Workflow
 
@@ -149,16 +156,22 @@ VALIDATE_CMD='<your test cmd>' bash scripts/ralph/ralph-gh.sh 20
 
 ### 3. What happens each iteration
 
-1. Select the highest-priority open `ready-for-agent` issue that is not `blocked`
-   (`P0 < P1 < P2 < unlabelled`, ties broken by issue number).
+1. Select the next issue: `plan-approved` first, then the highest-priority open
+   `ready-for-agent` that is not `blocked`/`awaiting-plan` (`P0 < P1 < P2 < unlabelled`,
+   ties broken by issue number).
 2. Create — or resume — a worktree + branch `agent/<n>-<slug>` from `origin/BASE_BRANCH`.
-3. Run the agent with `prompts/build.md` + the issue body & comments.
-4. **GATE 1** — run `VALIDATE_CMD` in the worktree.
-5. **GATE 2** — run an independent reviewer agent on the diff; parse its verdict.
-6. **PASS** (agent ok + GATE 1 + GATE 2): commit → push → open a draft PR (`Closes #n`)
-   → comment + close the issue → remove the worktree.
-   **FAIL**: label the issue `needs-human`, comment the gate codes, keep the worktree.
-7. When no `ready-for-agent` issues remain, print `<promise>COMPLETE</promise>` and stop.
+3. **PLAN** (fresh issues) — `PLAN_MODEL` writes a plan, posted to the issue. Semi mode
+   parks it on `awaiting-plan` for human approval; `AUTO_PLAN=1` approves inline.
+   `plan-approved` issues skip straight to step 4.
+4. **Implement** — run `CODE_MODEL` with `prompts/build.md` + the approved plan + the issue.
+5. **GATE 1** — run `VALIDATE_CMD` in the worktree. (agent error / GATE 1 fail → `needs-human`.)
+6. **Open draft PR** (`Closes #n`).
+7. **GATE 2 — review→remediate** — `REVIEW_MODEL` emits scoped findings. In-scope findings
+   are auto-fixed by `CODE_MODEL` (then re-GATE 1, re-review) up to `REVIEW_MAX_ITER`;
+   out-of-scope findings are filed as `needs-triage` issues (the PR is not blocked).
+8. **CLEAN**: comment, close the issue, remove the worktree — the **draft PR is left for a
+   human to merge**. **Exhausted `REVIEW_MAX_ITER`**: label `needs-human`, keep the worktree.
+9. When no actionable issues remain, print `<promise>COMPLETE</promise>` and stop.
 
 ## Configuration
 
@@ -178,7 +191,8 @@ All via environment variables (with defaults):
 | `PLAN_MODEL`    | `claude-opus-4-8`                    | Model for the Plan stage                           |
 | `CODE_MODEL`    | `claude-sonnet-4-6`                  | Model for Implement (and remediation fixes)        |
 | `REVIEW_MODEL`  | `claude-opus-4-8`                    | Model for the independent review                   |
-| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` / `review.md` live    |
+| `REVIEW_MAX_ITER` | `3`                                | Max review→remediate rounds before `needs-human`   |
+| `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` / `review.md` / `remediate.md` live |
 | `DRY_RUN`       | _(unset)_                            | If set, print the selection (and stage) and exit   |
 | `MAX_ITER`      | `20` (or first positional arg)       | Max loop iterations                                |
 
@@ -225,8 +239,10 @@ VALIDATE_CMD='go build ./... && go test ./...'
 | --------------------------------- | ----------------------------------------------------------- |
 | `scripts/ralph/ralph-gh.sh`       | The loop: select → worktree → agent → gates → finalize      |
 | `scripts/ralph/lib.sh`            | Pure, sourceable logic (the bats-testable "brain")          |
+| `scripts/ralph/prompts/plan.md`   | Prompt for the planning agent                               |
 | `scripts/ralph/prompts/build.md`  | Prompt for the implementing agent                           |
-| `scripts/ralph/prompts/review.md` | Prompt for the independent reviewer                         |
+| `scripts/ralph/prompts/review.md` | Prompt for the independent reviewer (scoped findings)       |
+| `scripts/ralph/prompts/remediate.md` | Prompt for fixing in-scope review findings               |
 | `scripts/ralph/tests/*.bats`      | The harness's own test suite (`npm test`)                   |
 | `scripts/setup-labels.sh`         | Idempotently create the operational + triage labels         |
 | `scripts/setup-upstream.sh`       | Wire the `upstream` remote for syncing                      |
@@ -239,10 +255,11 @@ VALIDATE_CMD='go build ./... && go test ./...'
 The decision logic is factored out of the I/O so it can be unit-tested without a
 network or `gh`:
 
-- `select_issue_from_json` — priority/blocked sort → next issue number
-- `parse_review_verdict` — fail-safe verdict parsing (only an exact first-line
-  `REVIEW: PASS` passes)
-- `gate_outcome` — `finalize` only when agent + GATE 1 + GATE 2 all pass
+- `select_issue_from_json` — priority/blocked/awaiting sort, plan-approved first → next issue
+- `issue_stage_from_labels` — `implement` (plan-approved) or `plan` (fresh)
+- `extract_json_block` / `review_findings` / `review_status` — fail-safe scoped-findings
+  parsing (in-scope → `REMEDIATE`, none → `CLEAN`, broken/missing → `UNCLEAN`)
+- `model_flag` — per-stage `--model` selection for the agent backend
 - `slugify` — branch-name slug from an issue title
 - `repo_slug_from_url` — `owner/repo` from any remote URL
 
@@ -250,10 +267,13 @@ network or `gh`:
 
 - **GATE 1 — validation.** Runs `VALIDATE_CMD` in the worktree. Typecheck + tests are
   the backpressure that keeps the backlog from compounding broken code.
-- **GATE 2 — independent review.** A *separate* agent context reviews the diff against
-  the issue and must emit `REVIEW: PASS` or `REVIEW: FAIL` on its **first line**.
-  Parsing is **fail-safe**: anything ambiguous is treated as `FAIL`, so code is never
-  merged on an unclear verdict. Finalize requires *all three* (agent rc, GATE 1, GATE 2).
+- **GATE 2 — review→remediate.** After the draft PR is open, a *separate* `REVIEW_MODEL`
+  context reviews the diff and emits **scoped findings** (a ` ```json ` array, with a
+  trailing `REVIEW: CLEAN` line only when no in-scope finding remains). `review_status` is
+  **fail-safe**: broken or missing JSON is treated as `UNCLEAN`, never clearing the PR.
+  In-scope findings are auto-fixed and re-reviewed up to `REVIEW_MAX_ITER`; out-of-scope
+  findings become `needs-triage` issues that do not block the PR. CLEAN leaves the draft PR
+  for a human to merge; exhausting the cap routes to `needs-human`.
 
 ## Testing the harness
 
@@ -332,9 +352,10 @@ gh issue list --label needs-human --state open
   (e.g. `dev`, not `main`).
 - **GATE 1 always fails on a clean worktree.** The worktree has no installed deps — make
   `VALIDATE_CMD` install them, or activate the toolchain first (see "Choosing VALIDATE_CMD").
-- **A genuine PASS is reported as `needs-human`.** The reviewer must put `REVIEW: PASS`
-  on its very first line with nothing before it; verdict parsing is intentionally
-  fail-safe. Tighten `prompts/review.md` if a backend rambles before the verdict.
+- **Clean code keeps looping or lands on `needs-human`.** The reviewer must emit a single
+  ` ```json ` findings array and a trailing `REVIEW: CLEAN` line when nothing is in-scope;
+  parsing is intentionally fail-safe (broken/missing JSON = `UNCLEAN`). Tighten
+  `prompts/review.md`, or raise `REVIEW_MAX_ITER`, if a backend's findings churn.
 - **`bad interpreter` / `command not found` running a script on Windows.** CRLF line
   endings; `.gitattributes` pins `*.sh` to LF — re-check out, or fix your editor.
 

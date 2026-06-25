@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ralph-gh.sh — GitHub-issue/PR-driven Ralph loop + mattpocock skills.
 #
-# Walking skeleton (slice #3): select -> worktree -> agent -> finalize (happy path).
-# Quality gates (validation, independent review) are added in slices #4/#5.
+# Pipeline per issue: select -> worktree -> plan (semi/AUTO_PLAN) -> implement -> GATE 1
+# validate -> open draft PR -> GATE 2 review->remediate (until CLEAN or REVIEW_MAX_ITER)
+# -> finalize (leave draft PR for a human) | needs-human. Pure logic lives in lib.sh.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +38,9 @@ REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-4-8}"
 # tagged with PLAN_MARKER so the implement stage can read the approved plan back.
 AUTO_PLAN="${AUTO_PLAN:-0}"
 PLAN_MARKER="<!-- ralph:plan -->"
+# Review->remediate loop (#21 Delta C). Cap on how many in-scope remediation rounds to
+# attempt before giving up and flagging needs-human.
+REVIEW_MAX_ITER="${REVIEW_MAX_ITER:-3}"
 PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
 DRY_RUN="${DRY_RUN:-}"
 MAX_ITER="${1:-20}"
@@ -119,7 +123,7 @@ run_plan_stage() {
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.
 run_once() {
   local num title slug branch wt build_prompt issue_ctx agent_rc gate_rc
-  local review_rc review_prompt diff_text verdict stage approved_plan
+  local stage approved_plan pr_ref
 
   num="$(select_next_issue || true)"
   if [ -z "${num:-}" ]; then
@@ -176,28 +180,103 @@ run_once() {
     set +e; ( cd "$wt" && bash -c "$VALIDATE_CMD" ); gate_rc=$?; set -e
   fi
 
-  # GATE 2 — independent review. A separate reviewer agent reads the diff and emits
-  # a verdict; fail-safe parsing means only an explicit first-line PASS clears it.
-  review_rc=1
-  if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ]; then
-    log "GATE 2: independent review (#$num) with model: ${REVIEW_MODEL:-<agent default>}"
-    diff_text="$(cd "$wt" && git add -A >/dev/null 2>&1 || true; git diff "origin/${BASE_BRANCH}")"
-    review_prompt="$(mktemp)"
-    { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/review.md"; echo; echo "## ISSUE #$num"; echo "$issue_ctx";
-      echo; echo "## DIFF (origin/${BASE_BRANCH} -> worktree)";
-      echo '```diff'; printf '%s\n' "$diff_text"; echo '```'; } > "$review_prompt"
-    verdict="$(cd "$wt" && agent_run "$review_prompt" "$REVIEW_MODEL" || true)"
-    log "Review verdict line: $(printf '%s' "$verdict" | head -1)"
-    [ "$(parse_review_verdict <<<"$verdict")" = "PASS" ] && review_rc=0
+  # Agent error or GATE 1 failure -> needs-human (unchanged from #1).
+  if [ "$agent_rc" -ne 0 ] || [ "$gate_rc" -ne 0 ]; then
+    log "FAIL #$num (agent=$agent_rc gate=$gate_rc) -> needs-human"
+    mark_needs_human "$num" "$branch" "$wt" "agent=$agent_rc, gate=$gate_rc"
+    return 0
   fi
 
-  if [ "$(gate_outcome "$agent_rc" "$gate_rc" "$review_rc")" = "finalize" ]; then
-    log "PASS #$num (agent=$agent_rc gate=$gate_rc review=$review_rc) -> finalize"
-    finalize "$num" "$title" "$branch" "$wt"
+  # ---- Stage 5: open the draft PR; Stages 6-7: review -> remediate until CLEAN ----
+  pr_ref="$(open_draft_pr "$num" "$title" "$branch" "$wt")"
+  log "Draft PR: ${pr_ref:-<branch $branch>}"
+  if review_remediate_loop "$num" "$wt" "$issue_ctx" "${pr_ref:-#$num}"; then
+    log "CLEAN #$num -> draft PR left for human review + merge"
+    finalize_clean "$num" "$branch" "$wt"
   else
-    log "FAIL #$num (agent=$agent_rc gate=$gate_rc review=$review_rc) -> needs-human"
-    mark_needs_human "$num" "$branch" "$wt" "agent=$agent_rc, gate=$gate_rc, review=$review_rc"
+    log "FAIL #$num -> review-remediate exhausted REVIEW_MAX_ITER -> needs-human"
+    mark_needs_human "$num" "$branch" "$wt" \
+      "review-remediate exhausted REVIEW_MAX_ITER ($REVIEW_MAX_ITER) with in-scope findings"
   fi
+}
+
+# run_review <num> <worktree> <issue-ctx> — run the independent reviewer (REVIEW_MODEL)
+# over the worktree diff and print its raw output (scoped findings JSON + maybe CLEAN).
+run_review() {
+  local num="$1" wt="$2" issue_ctx="$3" review_prompt diff_text
+  diff_text="$(cd "$wt" && git add -A >/dev/null 2>&1 || true; git diff "origin/${BASE_BRANCH}")"
+  review_prompt="$(mktemp)"
+  { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/review.md"; echo;
+    echo "## ISSUE #$num"; echo "$issue_ctx"; echo;
+    echo "## DIFF (origin/${BASE_BRANCH} -> worktree)";
+    echo '```diff'; printf '%s\n' "$diff_text"; echo '```'; } > "$review_prompt"
+  ( cd "$wt" && agent_run "$review_prompt" "$REVIEW_MODEL" || true )
+}
+
+# run_remediate <num> <worktree> <reviewer-output> <status> — feed the in-scope findings
+# (REMEDIATE) or the raw review (UNCLEAN fail-safe) to a CODE_MODEL agent to fix in place.
+run_remediate() {
+  local num="$1" wt="$2" reviewer="$3" status="$4" remediate_prompt findings
+  remediate_prompt="$(mktemp)"
+  { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/remediate.md"; echo;
+    echo "## In-scope review findings to fix (issue #$num)"; echo;
+    if [ "$status" = "REMEDIATE" ]; then
+      findings="$(printf '%s' "$reviewer" | review_findings in)"
+      echo '```json'; printf '%s\n' "$findings"; echo '```'
+    else
+      echo "The review output could not be parsed as structured findings."
+      echo "Address every concern it raises:"; echo
+      printf '%s\n' "$reviewer"
+    fi
+  } > "$remediate_prompt"
+  log "Remediate (#$num, status=$status) with model: ${CODE_MODEL:-<agent default>}"
+  ( cd "$wt" && agent_run "$remediate_prompt" "$CODE_MODEL" || true )
+}
+
+# file_out_scope_issues <num> <pr-ref> <reviewer-output> — open one needs-triage issue per
+# out-of-scope finding, referencing the originating issue/PR. Never blocks the current PR.
+file_out_scope_issues() {
+  local num="$1" pr_ref="$2" reviewer="$3" out n i title detail body
+  out="$(printf '%s' "$reviewer" | review_findings out)"
+  n="$(printf '%s' "$out" | jq 'length' 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ] || return 0
+  for i in $(seq 0 $((n - 1))); do
+    title="$(printf '%s' "$out" | jq -r ".[$i].title")"
+    detail="$(printf '%s' "$out" | jq -r ".[$i].detail // \"\"")"
+    body="$(printf 'Filed by ralph-gh from the review of #%s (%s).\n\n%s' "$num" "$pr_ref" "$detail")"
+    gh issue create --repo "$REPO" --title "$title" --body "$body" \
+      --label "needs-triage" >/dev/null 2>&1 \
+      && log "Filed out-of-scope issue: $title" || true
+  done
+}
+
+# review_remediate_loop <num> <worktree> <issue-ctx> <pr-ref>
+# Loop: review -> classify -> (CLEAN: file out-of-scope, succeed) | (REMEDIATE/UNCLEAN:
+# fix in place, re-GATE 1, push, re-review). Returns 0 on CLEAN, 1 when REVIEW_MAX_ITER
+# is exhausted with in-scope findings still present.
+review_remediate_loop() {
+  local num="$1" wt="$2" issue_ctx="$3" pr_ref="$4" iter=0 reviewer status
+  while [ "$iter" -lt "$REVIEW_MAX_ITER" ]; do
+    iter=$((iter + 1))
+    log "Review (#$num) iter $iter/$REVIEW_MAX_ITER with model: ${REVIEW_MODEL:-<agent default>}"
+    reviewer="$(run_review "$num" "$wt" "$issue_ctx")"
+    status="$(printf '%s' "$reviewer" | review_status)"
+    log "Review status (#$num): $status"
+    if [ "$status" = "CLEAN" ]; then
+      file_out_scope_issues "$num" "$pr_ref" "$reviewer"
+      return 0
+    fi
+    run_remediate "$num" "$wt" "$reviewer" "$status"
+    log "Re-GATE 1 after remediation (#$num)"
+    ( cd "$wt" && bash -c "$VALIDATE_CMD" ) >/dev/null 2>&1 \
+      || log "GATE 1 still failing after remediation (#$num) — next review will re-judge"
+    ( cd "$wt"
+      git add -A
+      git commit -m "fix: address in-scope review findings for #$num" >/dev/null 2>&1 || true
+      git push >/dev/null 2>&1 || true )
+  done
+  file_out_scope_issues "$num" "$pr_ref" "$reviewer"
+  return 1
 }
 
 # mark_needs_human — failure path: flag for a human, log the gate codes, KEEP the
@@ -210,18 +289,27 @@ mark_needs_human() {
     --body "ralph-gh stopped ($reason). Inspect branch \`$branch\` / worktree \`$wt\`."
 }
 
-# finalize — commit, push, open a draft PR, close the issue, remove the worktree.
-finalize() {
+# open_draft_pr <num> <title> <branch> <worktree>
+# Commit any pending work, push the branch, and open (or reuse) a draft PR that closes the
+# issue. Prints the PR URL so the review loop can reference it. Idempotent across resumes.
+open_draft_pr() {
   local num="$1" title="$2" branch="$3" wt="$4"
   ( cd "$wt"
     git add -A
-    git commit -m "feat: resolve #$num — $title" || true
-    git push -u origin "$branch"
-    gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
-      --title "Resolve #$num: $title" --body "Closes #$num" --draft 2>/dev/null \
-      || gh pr edit "$branch" --repo "$REPO" >/dev/null 2>&1 || true
-  )
-  gh issue comment "$num" --repo "$REPO" --body "Done by ralph-gh. Branch \`$branch\`, draft PR opened."
+    git commit -m "feat: resolve #$num — $title" >/dev/null 2>&1 || true
+    git push -u origin "$branch" >/dev/null 2>&1 || true )
+  gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
+    --title "Resolve #$num: $title" --body "Closes #$num" --draft >/dev/null 2>&1 || true
+  gh pr view "$branch" --repo "$REPO" --json url -q .url 2>/dev/null || true
+}
+
+# finalize_clean — success path once the review is CLEAN: comment, drop the agent label,
+# close the issue, and remove the worktree. The draft PR is LEFT for a human to merge
+# (no auto-undraft / auto-merge — that stays out of scope per #1).
+finalize_clean() {
+  local num="$1" branch="$2" wt="$3"
+  gh issue comment "$num" --repo "$REPO" \
+    --body "Done by ralph-gh (review CLEAN). Branch \`$branch\`, draft PR left for human review + merge."
   gh issue edit "$num" --repo "$REPO" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
   gh issue close "$num" --repo "$REPO"
   safe_worktree_remove "$wt"

@@ -47,32 +47,6 @@ slugify() {
     | cut -c1-40
 }
 
-# gate_outcome <agent_rc> <gate_rc> [review_rc]
-# Pure decision: prints "finalize" only when every gate passed (rc 0), else
-# "needs-human". review_rc defaults to 0 so it's a no-op until #5 wires GATE 2.
-gate_outcome() {
-  local agent_rc="$1" gate_rc="$2" review_rc="${3:-0}"
-  if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ] && [ "$review_rc" -eq 0 ]; then
-    echo finalize
-  else
-    echo needs-human
-  fi
-}
-
-# parse_review_verdict
-# Reads a reviewer's output on stdin and prints "PASS" or "FAIL". Fail-safe: PASS
-# only when the FIRST non-empty line, trimmed and CR-stripped, equals exactly
-# "REVIEW: PASS". Anything else — empty, mid-text occurrence, extra words — is FAIL.
-parse_review_verdict() {
-  local line first=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    line="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-    if [ -n "$line" ]; then first="$line"; break; fi
-  done
-  if [ "$first" = "REVIEW: PASS" ]; then echo PASS; else echo FAIL; fi
-}
-
 # extract_json_block
 # Prints the contents of the FIRST ```json fenced block found on stdin (the lines
 # between the opening ```json fence and the next ``` fence). Prints nothing when no

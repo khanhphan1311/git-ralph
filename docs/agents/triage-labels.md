@@ -21,6 +21,8 @@ labels this harness drives.
 | `ready-for-agent` | The loop may pick this issue up (also a triage role above)  |
 | `needs-human`     | A gate failed; an agent stopped and a human must look       |
 | `blocked`         | Skipped by the selector until unblocked                     |
+| `awaiting-plan`   | Plan posted; parked until a human approves (skipped like `blocked`) |
+| `plan-approved`   | Plan approved; selected first, implemented straight away    |
 | `P0` / `P1` / `P2`| Priority; the selector sorts `P0 < P1 < P2 < unlabelled`    |
 
 When a skill mentions a role, use the corresponding label string from these tables.
