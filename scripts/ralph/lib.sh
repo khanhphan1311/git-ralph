@@ -62,6 +62,20 @@ harness_version() {
   echo "git-ralph 0.1.0"
 }
 
+# model_flag <agent> <model>
+# Builds the per-stage model selection flag for an agent invocation. Only `claude`
+# accepts `--model` today, so it prints `--model <model>`; every other backend (and an
+# empty model) prints nothing, letting the agent fall back to its own default. This is
+# the seam that lets the harness route PLAN_MODEL/CODE_MODEL/REVIEW_MODEL per stage.
+model_flag() {
+  local agent="$1" model="${2:-}"
+  [ -z "$model" ] && return 0
+  case "$agent" in
+    claude) printf -- '--model %s' "$model" ;;
+    *) ;;
+  esac
+}
+
 # is_windows
 # True on Git Bash / MSYS / Cygwin. Reads OSTYPE first (overridable for tests),
 # falling back to `uname -s` only when OSTYPE is unset.

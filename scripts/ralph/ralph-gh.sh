@@ -21,17 +21,26 @@ BLOCKED_LABEL="${BLOCKED_LABEL:-blocked}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
 VALIDATE_CMD="${VALIDATE_CMD:-npm run typecheck && npm test}"
 AGENT="${AGENT:-claude}"
+# Per-stage models (#21 Delta B). Plan/review want a strong reasoner; implement is mostly
+# mechanical so a cheaper/faster model suffices. Routed via model_flag at each invocation.
+PLAN_MODEL="${PLAN_MODEL:-claude-opus-4-8}"
+CODE_MODEL="${CODE_MODEL:-claude-sonnet-4-6}"
+REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-4-8}"
 PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
 DRY_RUN="${DRY_RUN:-}"
 MAX_ITER="${1:-20}"
 
 log() { printf '\033[1;34m[ralph]\033[0m %s\n' "$*"; }
 
-# agent_run <prompt-file> — run the configured agent with the prompt's contents.
+# agent_run <prompt-file> [model] — run the configured agent with the prompt's contents,
+# selecting a per-stage model when one is given (claude only; no-op for codex).
 agent_run() {
+  local prompt="$1" model="${2:-}"
   case "$AGENT" in
-    claude) claude -p --dangerously-skip-permissions "$(cat "$1")" ;;
-    codex)  codex exec --yolo - < "$1" ;;
+    claude)
+      # shellcheck disable=SC2046  # model_flag emits 0-or-2 intentional words.
+      claude -p $(model_flag "$AGENT" "$model") --dangerously-skip-permissions "$(cat "$prompt")" ;;
+    codex)  codex exec --yolo - < "$prompt" ;;
     *) echo "Unsupported AGENT: $AGENT" >&2; return 2 ;;
   esac
 }
@@ -72,7 +81,8 @@ run_once() {
   build_prompt="$(mktemp)"
   { cat "${PROMPT_DIR}/build.md"; echo; echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
 
-  set +e; ( cd "$wt" && agent_run "$build_prompt" ); agent_rc=$?; set -e
+  log "Implement (#$num) with model: ${CODE_MODEL:-<agent default>}"
+  set +e; ( cd "$wt" && agent_run "$build_prompt" "$CODE_MODEL" ); agent_rc=$?; set -e
 
   # GATE 1 — validation. Only run it if the agent itself didn't error out.
   gate_rc=0
@@ -85,13 +95,13 @@ run_once() {
   # a verdict; fail-safe parsing means only an explicit first-line PASS clears it.
   review_rc=1
   if [ "$agent_rc" -eq 0 ] && [ "$gate_rc" -eq 0 ]; then
-    log "GATE 2: independent review (#$num)"
+    log "GATE 2: independent review (#$num) with model: ${REVIEW_MODEL:-<agent default>}"
     diff_text="$(cd "$wt" && git add -A >/dev/null 2>&1 || true; git diff "origin/${BASE_BRANCH}")"
     review_prompt="$(mktemp)"
     { cat "${PROMPT_DIR}/review.md"; echo; echo "## ISSUE #$num"; echo "$issue_ctx";
       echo; echo "## DIFF (origin/${BASE_BRANCH} -> worktree)";
       echo '```diff'; printf '%s\n' "$diff_text"; echo '```'; } > "$review_prompt"
-    verdict="$(cd "$wt" && agent_run "$review_prompt" || true)"
+    verdict="$(cd "$wt" && agent_run "$review_prompt" "$REVIEW_MODEL" || true)"
     log "Review verdict line: $(printf '%s' "$verdict" | head -1)"
     [ "$(parse_review_verdict <<<"$verdict")" = "PASS" ] && review_rc=0
   fi
