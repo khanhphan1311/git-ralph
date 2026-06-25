@@ -20,6 +20,13 @@ proposals in these terms.
   emits a **verdict** on its first line.
 - **Verdict** — `REVIEW: PASS` or `REVIEW: FAIL`. Parsing is fail-safe: anything
   ambiguous is treated as `FAIL`.
+- **Scoped finding** — a single review issue tagged `scope: "in"` (caused by this diff:
+  bug, missing test, acceptance-criteria miss, regression, leaked secret) or
+  `scope: "out"` (pre-existing / unrelated / belongs to another issue). Emitted by the
+  reviewer as a JSON array inside a ` ```json ` block (#21 Delta C).
+- **review_status** — pure classifier over reviewer output: `REMEDIATE` (>=1 in-scope
+  finding → auto-fix), `CLEAN` (no in-scope findings, or a bare `REVIEW: CLEAN` line),
+  or `UNCLEAN` (fail-safe: broken/missing findings JSON — never clears the PR).
 - **Finalize** — the success path: commit → push → open draft PR (`Closes #n`) →
   close issue → remove worktree. Runs only when agent rc=0 AND GATE 1 AND GATE 2 pass.
 - **needs-human** — the failure path: label the issue, comment the gate result codes,

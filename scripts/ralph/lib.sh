@@ -55,6 +55,59 @@ parse_review_verdict() {
   if [ "$first" = "REVIEW: PASS" ]; then echo PASS; else echo FAIL; fi
 }
 
+# extract_json_block
+# Prints the contents of the FIRST ```json fenced block found on stdin (the lines
+# between the opening ```json fence and the next ``` fence). Prints nothing when no
+# such block exists. This is the seam the scoped-findings reviewer (#21 Delta C) uses
+# to hand structured findings to the harness.
+extract_json_block() {
+  awk '
+    /^[[:space:]]*```json[[:space:]]*$/ { infence=1; next }
+    infence && /^[[:space:]]*```[[:space:]]*$/ { exit }
+    infence { print }
+  '
+}
+
+# review_findings <scope>
+# Reads reviewer output on stdin and prints, as a compact JSON array, the findings
+# whose .scope equals <scope> ("in" or "out"). Fail-safe: any missing/broken JSON
+# block yields "[]" so the orchestrator loop never crashes on bad model output.
+review_findings() {
+  local scope="$1" block
+  block="$(extract_json_block)"
+  printf '%s' "$block" \
+    | jq -c --arg s "$scope" '[ .[] | select(.scope == $s) ]' 2>/dev/null \
+    || echo '[]'
+}
+
+# review_status
+# Reads reviewer output on stdin and prints the loop's next move:
+#   REMEDIATE — the findings block parsed and has >=1 in-scope finding (auto-fix).
+#   CLEAN     — findings parsed with zero in-scope (out-only is filed, not blocking),
+#               OR no findings block at all but an explicit `REVIEW: CLEAN` line.
+#   UNCLEAN   — fail-safe: a findings fence exists but does NOT parse, or there is no
+#               findings block and no CLEAN line. Treated as "still dirty" — never
+#               clears the PR on ambiguous output.
+# The JSON findings block is authoritative for scope; a bare CLEAN line is honoured
+# only when no findings block is present.
+review_status() {
+  local input block in_count
+  input="$(cat)"
+  if printf '%s\n' "$input" | grep -qE '^[[:space:]]*```json[[:space:]]*$'; then
+    block="$(printf '%s\n' "$input" | extract_json_block)"
+    if printf '%s' "$block" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      in_count="$(printf '%s' "$block" | jq '[ .[] | select(.scope == "in") ] | length')"
+      if [ "${in_count:-0}" -gt 0 ]; then echo REMEDIATE; else echo CLEAN; fi
+    else
+      echo UNCLEAN
+    fi
+  elif printf '%s\n' "$input" | grep -qE '^[[:space:]]*REVIEW: CLEAN[[:space:]]*$'; then
+    echo CLEAN
+  else
+    echo UNCLEAN
+  fi
+}
+
 # harness_version
 # Prints the harness version string (`git-ralph <semver>`) to stdout. Pure and
 # sourceable — the version is kept in lock-step with package.json's "version".
