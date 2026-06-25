@@ -15,7 +15,8 @@ proposals in these terms.
   the next issue number (or empty).
 - **awaiting-plan** — a plan has been posted and the loop is waiting for a human to
   approve it. Skipped by the selector (like `blocked`) so the loop keeps draining other
-  issues instead of blocking.
+  issues — UNLESS `plan-approved` is also present, which overrides the skip so a human
+  can approve by simply adding the one label.
 - **plan-approved** — a human approved the posted plan. The selector ranks these first
   and the loop skips the plan stage, going straight to implement against the vetted plan.
 - **Worktree** — an isolated `git worktree` + branch (`agent/<n>-<slug>`) per issue,

@@ -4,10 +4,11 @@
 
 # select_issue_from_json [blocked_label] [awaiting_label] [approved_label]
 # Reads `gh issue list --json number,labels` output on stdin and picks the next issue
-# to work. Drops issues carrying the blocked label OR the awaiting-plan label (both are
-# "not actionable by the loop right now"). Among the rest, plan-approved issues rank
-# first (finish what a human already vetted), then priority (P0<P1<P2<unlabelled), then
-# issue number. Prints the chosen issue number (or nothing if none qualify).
+# to work. Drops `blocked` issues, and `awaiting-plan` issues UNLESS they also carry
+# `plan-approved` (a human approving by adding plan-approved on top of awaiting-plan
+# must still be selectable). Among the rest, plan-approved issues rank first (finish what
+# a human already vetted), then priority (P0<P1<P2<unlabelled), then issue number. Prints
+# the chosen issue number (or nothing if none qualify).
 select_issue_from_json() {
   local blk="${1:-${BLOCKED_LABEL:-blocked}}"
   local awaiting="${2:-${AWAITING_PLAN_LABEL:-awaiting-plan}}"
@@ -20,7 +21,8 @@ select_issue_from_json() {
         else 3 end);
     def approved_rank(ls): (ls | map(.name) | if index($approved) then 0 else 1 end);
     map(select(.labels | map(.name) as $n
-      | (($n | index($blk)) | not) and (($n | index($awaiting)) | not)))
+      | (($n | index($blk)) | not)
+        and ((($n | index($awaiting)) | not) or (($n | index($approved)) != null))))
     | sort_by(approved_rank(.labels), prio(.labels), .number)
     | (.[0].number // empty)'
 }

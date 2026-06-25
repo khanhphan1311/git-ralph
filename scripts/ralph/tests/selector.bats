@@ -83,6 +83,24 @@ setup() {
   [ "$result" = "52" ]
 }
 
+@test "plan-approved overrides a lingering awaiting-plan (still selectable)" {
+  json='[
+    {"number": 70, "labels": [{"name": "awaiting-plan"}, {"name": "plan-approved"}, {"name": "P2"}]},
+    {"number": 71, "labels": [{"name": "ready-for-agent"}, {"name": "P0"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
+  [ "$result" = "70" ]
+}
+
+@test "blocked still wins even with plan-approved (blocked is absolute)" {
+  json='[
+    {"number": 80, "labels": [{"name": "blocked"}, {"name": "plan-approved"}, {"name": "P0"}]},
+    {"number": 81, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
+  [ "$result" = "81" ]
+}
+
 @test "two equal-priority plan-approved -> lower issue number wins" {
   json='[
     {"number": 61, "labels": [{"name": "plan-approved"}, {"name": "P1"}]},
