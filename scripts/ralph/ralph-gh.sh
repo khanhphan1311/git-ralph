@@ -79,7 +79,7 @@ run_once() {
 
   issue_ctx="$(gh issue view "$num" --repo "$REPO" --comments)"
   build_prompt="$(mktemp)"
-  { cat "${PROMPT_DIR}/build.md"; echo; echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
+  { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/build.md"; echo; echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
 
   log "Implement (#$num) with model: ${CODE_MODEL:-<agent default>}"
   set +e; ( cd "$wt" && agent_run "$build_prompt" "$CODE_MODEL" ); agent_rc=$?; set -e
@@ -98,7 +98,7 @@ run_once() {
     log "GATE 2: independent review (#$num) with model: ${REVIEW_MODEL:-<agent default>}"
     diff_text="$(cd "$wt" && git add -A >/dev/null 2>&1 || true; git diff "origin/${BASE_BRANCH}")"
     review_prompt="$(mktemp)"
-    { cat "${PROMPT_DIR}/review.md"; echo; echo "## ISSUE #$num"; echo "$issue_ctx";
+    { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/review.md"; echo; echo "## ISSUE #$num"; echo "$issue_ctx";
       echo; echo "## DIFF (origin/${BASE_BRANCH} -> worktree)";
       echo '```diff'; printf '%s\n' "$diff_text"; echo '```'; } > "$review_prompt"
     verdict="$(cd "$wt" && agent_run "$review_prompt" "$REVIEW_MODEL" || true)"

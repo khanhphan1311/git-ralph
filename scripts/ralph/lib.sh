@@ -76,6 +76,19 @@ model_flag() {
   esac
 }
 
+# prepend_rules <rules-file>
+# Emits the shared global engineering rules followed by a blank line, so the harness
+# can prepend them to EVERY stage prompt (build, review) and thus to every spawned
+# agent - independent of backend (claude/codex) or whether the host happens to
+# auto-load ~/.claude/CLAUDE.md. A missing or unnamed rules file is non-fatal: prints
+# nothing and returns 0, so the stage prompt still runs.
+prepend_rules() {
+  local rules="${1:-}"
+  [ -n "$rules" ] && [ -f "$rules" ] || return 0
+  cat "$rules"
+  echo
+}
+
 # is_windows
 # True on Git Bash / MSYS / Cygwin. Reads OSTYPE first (overridable for tests),
 # falling back to `uname -s` only when OSTYPE is unset.
