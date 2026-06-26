@@ -277,29 +277,54 @@ auto_fix:
 
 ### Running lanes in parallel
 
-The selector is greedy: every session independently grabs the highest-priority
-`ready-for-agent` issue. Run two sessions against the same backlog and they pick the
-**same** issue → same branch `agent/<n>-<slug>` → the shared no-mistakes daemon
-serializes pushes per branch and **cancels** the in-flight run; if they also share a
-`WORKTREE_ROOT` they delete each other's worktrees. So give each lane a **disjoint** set
-of issues:
+Running several sessions at once has **four** distinct contention sources. The first three
+are fully fixable with isolation; the fourth is an integration-process problem the harness
+can't solve alone.
+
+| Source | Symptom | Fix |
+|---|---|---|
+| Same issue picked | Both lanes take the top issue → same branch → daemon cancels the in-flight run | `ONLY_ISSUES` per lane (disjoint numbers) |
+| Shared worktree root | A lane's `safe_worktree_remove` wipes another's worktree | Per-lane `WORKTREE_ROOT` (or separate clone) |
+| **Shared daemon** | One daemon per machine — any lane's `daemon stop` (or exit trap) kills **everyone's** in-flight gate runs | Per-lane **`NM_HOME`** → independent daemon/socket/db/gate |
+| Base moves faster than the gate | Long gate (tests + review) on a **hot file** → base advances → PR re-conflicts forever | Not a harness problem — see below |
+
+Fully-isolated lane recipe:
 
 ```bash
-# Terminal 1 — lane A
-ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a \
-  bash scripts/ralph/ralph-gh.sh 5 ; no-mistakes daemon stop
+# Lane A — its own clone, NM_HOME, worktree root, and issue set
+export NM_HOME=~/.nm-lane-a
+cd /path/to/clone-a
+no-mistakes init                                   # once, under this NM_HOME
+ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a bash /path/to/git-ralph/scripts/ralph/ralph-gh.sh 5
 
-# Terminal 2 — lane B
-ONLY_ISSUES="20,21" WORKTREE_ROOT=../wt-lane-b \
-  bash scripts/ralph/ralph-gh.sh 5 ; no-mistakes daemon stop
+# Lane B — a different clone/NM_HOME/worktrees/issues
+export NM_HOME=~/.nm-lane-b
+cd /path/to/clone-b
+no-mistakes init
+ONLY_ISSUES="20,21" WORKTREE_ROOT=../wt-lane-b bash /path/to/git-ralph/scripts/ralph/ralph-gh.sh 5
 ```
 
-`ONLY_ISSUES` filters the backlog (both `ready-for-agent` and `plan-approved`) down to the
-listed numbers, so the lanes never select the same issue. A per-lane `WORKTREE_ROOT` keeps
-their worktrees from colliding. For **heavy** parallelism, run each lane from a **separate
-clone** of the target repo — that also gives each its own no-mistakes gate (the gate is
-keyed by the working directory's absolute path), fully isolating the daemon runs. For an
-ad-hoc clean gate drive, pause the other lanes first.
+> ⚠️ **Do NOT append `; no-mistakes daemon stop` (or trap it on exit) when lanes run
+> concurrently.** There is one daemon per `NM_HOME`; stopping it aborts every in-flight run
+> that shares it. With per-lane `NM_HOME` each lane has its own daemon, so a stop is scoped:
+> `NM_HOME=~/.nm-lane-a no-mistakes daemon stop`. Stop a shared daemon only when **all**
+> lanes are done (that one-line stop is fine for a single idle session — see "PowerShell
+> windows popping up" below).
+
+**The fourth source (base velocity) is not fixable by `ONLY_ISSUES`.** Partitioning by issue
+number doesn't help when the issues touch the **same hot file** — a ~30-min gate cycle can't
+converge against a base that moves every few minutes on that file. Address it at the
+integration layer:
+
+- **Use a merge queue** (GitHub native merge queue or a bot) so PRs integrate serially
+  against the tip and auto-rebase. This is the real fix for "base moves faster than the gate."
+- **Partition lanes by file/module ownership, not just issue number.** Two issues that both
+  touch a hot file are inherently serial — run them in one lane, sequentially, not in two.
+- **Shrink the gate** so it cycles faster (a targeted `commands.test` subset, trading some
+  safety for speed).
+- **Long term, split the hot file** so parallel PRs stop colliding on it.
+
+For an ad-hoc clean gate drive, pause the other lanes first.
 
 ## Key files
 
@@ -441,6 +466,13 @@ gh issue list --label needs-human --state open
   `no-mistakes axi logs --step <step>`; the worktree is kept for you.
 - **`bad interpreter` / `command not found` running a script on Windows.** CRLF line
   endings; `.gitattributes` pins `*.sh` to LF — re-check out, or fix your editor.
+- <a name="powershell-windows-popping-up"></a>**PowerShell/console windows popping up
+  repeatedly (Windows).** The no-mistakes daemon left running idle spawns child processes
+  on a timer, flashing console windows. The harness's `ensure_daemon` restarts it on demand,
+  so for a single idle session it's safe to stop it: `no-mistakes daemon stop` (it does not
+  auto-start on boot — no service/task/Run key). **But** with concurrent lanes, a stop kills
+  every in-flight run sharing that daemon — use per-lane `NM_HOME` instead (see "Running
+  lanes in parallel").
 
 ## Staying current with upstream
 
