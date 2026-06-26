@@ -288,20 +288,28 @@ can't solve alone.
 | **Shared daemon** | One daemon per machine — any lane's `daemon stop` (or exit trap) kills **everyone's** in-flight gate runs | Per-lane **`NM_HOME`** → independent daemon/socket/db/gate |
 | Base moves faster than the gate | Long gate (tests + review) on a **hot file** → base advances → PR re-conflicts forever | Not a harness problem — see below |
 
-Fully-isolated lane recipe:
+Fully-isolated lane recipe — use the **`scripts/run-lane.sh`** wrapper, which sets the
+per-lane `NM_HOME` / `WORKTREE_ROOT` / `ONLY_ISSUES`, inits the lane's gate, runs the
+harness, and **does not** stop the daemon (stopping mid-run orphans agents):
 
 ```bash
-# Lane A — its own clone, NM_HOME, worktree root, and issue set
-export NM_HOME=~/.nm-lane-a
+# Lane A (terminal/session 1) — run from its own clone of the target repo
 cd /path/to/clone-a
-no-mistakes init                                   # once, under this NM_HOME
-ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a bash /path/to/git-ralph/scripts/ralph/ralph-gh.sh 5
+bash /path/to/git-ralph/scripts/run-lane.sh a "12,13" 5
 
-# Lane B — a different clone/NM_HOME/worktrees/issues
-export NM_HOME=~/.nm-lane-b
+# Lane B (terminal/session 2) — a different clone + issue set
 cd /path/to/clone-b
-no-mistakes init
-ONLY_ISSUES="20,21" WORKTREE_ROOT=../wt-lane-b bash /path/to/git-ralph/scripts/ralph/ralph-gh.sh 5
+bash /path/to/git-ralph/scripts/run-lane.sh b "20,21" 5
+```
+
+`run-lane.sh a "12,13"` → `NM_HOME=~/.nm-lane-a`, `WORKTREE_ROOT=../ralph-wt-a`,
+`ONLY_ISSUES="12,13"`. Stop a lane's daemon only when it is idle:
+`NM_HOME=~/.nm-lane-a no-mistakes daemon stop`. The equivalent raw form, if you prefer:
+
+```bash
+export NM_HOME=~/.nm-lane-a
+cd /path/to/clone-a && no-mistakes init
+ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a bash /path/to/git-ralph/scripts/ralph/ralph-gh.sh 5
 ```
 
 > ⚠️ **Do NOT append `; no-mistakes daemon stop` (or trap it on exit) when lanes run
@@ -338,6 +346,7 @@ For an ad-hoc clean gate drive, pause the other lanes first.
 | `scripts/ralph/tests/*.bats`      | The harness's own test suite (`npm test`)                   |
 | `scripts/setup-labels.sh`         | Idempotently create the operational + triage labels         |
 | `scripts/setup-no-mistakes.sh`    | Idempotently init the no-mistakes gate + daemon             |
+| `scripts/run-lane.sh`             | Launch one isolated lane (NM_HOME/WORKTREE_ROOT/ONLY_ISSUES) for parallel runs |
 | `scripts/setup-upstream.sh`       | Wire the `upstream` remote for syncing                      |
 | `AGENTS.md` / `docs/agents/`      | Skill configuration (issue tracker, labels, domain docs)    |
 | `CONTEXT.md`                      | Domain glossary the agents and skills speak in              |
