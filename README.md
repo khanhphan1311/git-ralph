@@ -321,16 +321,55 @@ ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a bash /path/to/git-ralph/scripts/r
 
 **The fourth source (base velocity) is not fixable by `ONLY_ISSUES`.** Partitioning by issue
 number doesn't help when the issues touch the **same hot file** — a ~30-min gate cycle can't
-converge against a base that moves every few minutes on that file. Address it at the
-integration layer:
+converge against a base that moves every few minutes on that file. It is an *integration*
+problem (the base moves during your gate), not a *local* one — see the next section.
 
-- **Use a merge queue** (GitHub native merge queue or a bot) so PRs integrate serially
-  against the tip and auto-rebase. This is the real fix for "base moves faster than the gate."
-- **Partition lanes by file/module ownership, not just issue number.** Two issues that both
-  touch a hot file are inherently serial — run them in one lane, sequentially, not in two.
-- **Shrink the gate** so it cycles faster (a targeted `commands.test` subset, trading some
-  safety for speed).
-- **Long term, split the hot file** so parallel PRs stop colliding on it.
+#### Merge queue on the base branch (the real fix for base velocity)
+
+A **merge queue** is the proper, infrastructure-level fix for "the base moves faster than
+one gate cycle." Each PR is enqueued, **re-tested against the latest tip, and merged
+atomically and serially** — so no PR ever merges on a stale base, and the rebase→conflict
+livelock disappears. It complements lane isolation: `NM_HOME`/`ONLY_ISSUES`/`WORKTREE_ROOT`
+fix *local* contention; the merge queue fixes *integration* races. Use both.
+
+It fits git-ralph/no-mistakes unchanged: the gate validates and **opens** the PR
+(`checks-passed`); git-ralph never merges, so a human (or auto-merge) **enqueues** it
+instead of merging directly.
+
+To adopt it (on the target repo, e.g. GitHub native merge queue):
+
+1. **Branch protection on the base branch → Require merge queue.**
+2. **Add a CI workflow triggered on the `merge_group` event that runs the real test suite.**
+   This is the check the queue gates on — the easy mistake is enabling the queue but never
+   wiring `merge_group`, so it tests nothing:
+   ```yaml
+   on:
+     pull_request:
+     merge_group:        # <-- the queue runs required checks here, against the tip
+   ```
+3. **Make required status checks be those real tests** (not an always-green placeholder).
+4. **Tune throughput:** the queue tests in order, so a ~30-min suite throttles it — enable
+   the queue's batching (test several PRs together) and/or shrink CI (targeted tests).
+
+Caveats the queue does **not** solve on its own:
+
+- **Hard textual conflicts.** The queue resolves *semantic/test* races when the base moves,
+  but two PRs editing the **same lines of a hot file** still conflict at enqueue — the
+  second fails and you rebase. So still **partition lanes by file/module ownership**: two
+  issues that both touch a hot file are inherently serial — run them in one lane,
+  sequentially, not in two.
+- **Plan availability.** GitHub native merge queue is available for public repos and for
+  private repos on **GitHub Team/Enterprise** — check the repo's plan first.
+
+Other integration-layer levers: **shrink the gate** (targeted `commands.test`) so it cycles
+faster, and **long term, split the hot file** so parallel PRs stop colliding on it.
+
+#### Complete parallel setup
+
+1. **`scripts/run-lane.sh` per lane** — isolates `NM_HOME` + `WORKTREE_ROOT` + `ONLY_ISSUES`
+   (and never stops the daemon mid-run).
+2. **Merge queue on the base branch** — serializes integration so the base can't outrun a gate.
+3. **Partition lanes by file/module ownership** — never run two lanes that touch the same hot file.
 
 For an ad-hoc clean gate drive, pause the other lanes first.
 
