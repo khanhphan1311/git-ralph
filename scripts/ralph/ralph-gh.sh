@@ -312,7 +312,9 @@ safe_worktree_remove() {
   local wt="$1" link
   if [ -d "$wt" ]; then
     if is_windows; then
-      powershell.exe -NoProfile -ExecutionPolicy Bypass \
+      # -WindowStyle Hidden / -NonInteractive: never flash or block on a console window
+      # (the harness can run hundreds of these across a batch).
+      powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass \
         -File "$(cygpath -w "${HERE}/safe-worktree-remove.ps1")" \
         -WorktreePath "$(cygpath -w "$wt")" || true
     else

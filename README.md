@@ -466,13 +466,26 @@ gh issue list --label needs-human --state open
   `no-mistakes axi logs --step <step>`; the worktree is kept for you.
 - **`bad interpreter` / `command not found` running a script on Windows.** CRLF line
   endings; `.gitattributes` pins `*.sh` to LF — re-check out, or fix your editor.
-- <a name="powershell-windows-popping-up"></a>**PowerShell/console windows popping up
-  repeatedly (Windows).** The no-mistakes daemon left running idle spawns child processes
-  on a timer, flashing console windows. The harness's `ensure_daemon` restarts it on demand,
-  so for a single idle session it's safe to stop it: `no-mistakes daemon stop` (it does not
-  auto-start on boot — no service/task/Run key). **But** with concurrent lanes, a stop kills
-  every in-flight run sharing that daemon — use per-lane `NM_HOME` instead (see "Running
-  lanes in parallel").
+- <a name="powershell-windows-popping-up"></a>**Hundreds of empty console windows pile up
+  and stay open (Windows).** These are **orphaned `claude.exe` agents** that no-mistakes
+  spawns per pipeline step (review/test/document/fix). They orphan when the daemon is
+  **killed mid-run** — and the usual killer is a `no-mistakes daemon stop` (a per-run suffix
+  or an exit trap) firing while a run is still active. The daemon log shows it as repeated
+  `method=shutdown` + `cancelled run on shutdown`. Fixes, in order:
+  1. **Never `daemon stop` while a run is active.** Stop it only when the machine is truly
+     idle (no in-flight gate run). Remove any `; no-mistakes daemon stop` suffix / exit trap
+     from your run wrapper.
+  2. **Per-lane `NM_HOME`** when running concurrent sessions, so each has its own daemon and
+     a stop in one lane can't orphan another's agents (see "Running lanes in parallel").
+  3. Clean up existing orphans (kills only `claude` whose parent has died — leaves your
+     live Claude Code sessions, whose parent `Code.exe`/`node` is alive):
+     ```powershell
+     Get-CimInstance Win32_Process -Filter "Name='claude.exe'" |
+       Where-Object { -not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue) } |
+       ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+     ```
+  The idle daemon also *flashes* (not piles up) windows on a timer; that one stops cleanly
+  with `no-mistakes daemon stop` when no run is active (it does not auto-start on boot).
 
 ## Staying current with upstream
 
