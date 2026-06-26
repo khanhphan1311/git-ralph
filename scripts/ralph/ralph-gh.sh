@@ -26,6 +26,11 @@ BLOCKED_LABEL="${BLOCKED_LABEL:-blocked}"
 # plan so the loop resumes it ahead of fresh work and jumps straight to implement.
 AWAITING_PLAN_LABEL="${AWAITING_PLAN_LABEL:-awaiting-plan}"
 PLAN_APPROVED_LABEL="${PLAN_APPROVED_LABEL:-plan-approved}"
+# Parallel lanes: restrict this run to a comma/space-separated allowlist of issue numbers
+# so multiple sessions claim DISJOINT issues and never collide on a branch/worktree/gate
+# run. Empty = the whole backlog. Pair it with a per-lane WORKTREE_ROOT (or a separate
+# clone) so the lanes' worktrees can't delete each other.
+ONLY_ISSUES="${ONLY_ISSUES:-}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
 AGENT="${AGENT:-claude}"
 # Per-stage models (#21 Delta B). Plan wants a strong reasoner; implement is mostly
@@ -84,7 +89,7 @@ select_next_issue() {
     gh issue list --repo "$REPO" --state open --label "$PLAN_APPROVED_LABEL" \
       --json number,labels --limit 200
   } | jq -s 'add | unique_by(.number)' \
-    | select_issue_from_json "$BLOCKED_LABEL" "$AWAITING_PLAN_LABEL" "$PLAN_APPROVED_LABEL"
+    | select_issue_from_json "$BLOCKED_LABEL" "$AWAITING_PLAN_LABEL" "$PLAN_APPROVED_LABEL" "$ONLY_ISSUES"
 }
 
 # issue_stage <num> — print "plan" or "implement" for an issue, from its current labels.

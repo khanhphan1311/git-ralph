@@ -109,3 +109,48 @@ setup() {
   result="$(select_issue_from_json blocked awaiting-plan plan-approved <<<"$json")"
   [ "$result" = "60" ]
 }
+
+# --- ONLY_ISSUES allowlist (parallel lanes): restrict selection to given numbers ---
+
+@test "allowlist restricts to listed issues even past a higher-priority one outside it" {
+  json='[
+    {"number": 90, "labels": [{"name": "ready-for-agent"}, {"name": "P0"}]},
+    {"number": 91, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved 91 <<<"$json")"
+  [ "$result" = "91" ]
+}
+
+@test "allowlist accepts a comma/space separated list" {
+  json='[
+    {"number": 12, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]},
+    {"number": 13, "labels": [{"name": "ready-for-agent"}, {"name": "P0"}]},
+    {"number": 14, "labels": [{"name": "ready-for-agent"}, {"name": "P1"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "12, 14" <<<"$json")"
+  [ "$result" = "14" ]  # 14 is P1, 12 is P2; 13 excluded by allowlist
+}
+
+@test "empty allowlist -> no filter (unchanged behaviour)" {
+  json='[
+    {"number": 5, "labels": [{"name": "ready-for-agent"}, {"name": "P0"}]},
+    {"number": 6, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "" <<<"$json")"
+  [ "$result" = "5" ]
+}
+
+@test "allowlist matching nothing -> empty output" {
+  json='[{"number": 7, "labels": [{"name": "ready-for-agent"}, {"name": "P0"}]}]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "99" <<<"$json")"
+  [ -z "$result" ]
+}
+
+@test "allowlist still honours blocked exclusion (cannot select a blocked listed issue)" {
+  json='[
+    {"number": 20, "labels": [{"name": "ready-for-agent"}, {"name": "blocked"}, {"name": "P0"}]},
+    {"number": 21, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "20,21" <<<"$json")"
+  [ "$result" = "21" ]
+}
