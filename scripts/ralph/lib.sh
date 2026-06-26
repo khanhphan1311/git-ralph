@@ -2,27 +2,33 @@
 # lib.sh — pure, sourceable logic for the Ralph harness. No network, no side effects.
 # ralph-gh.sh sources this and wires the real gh/git I/O around these functions.
 
-# select_issue_from_json [blocked_label] [awaiting_label] [approved_label]
+# select_issue_from_json [blocked_label] [awaiting_label] [approved_label] [only_issues]
 # Reads `gh issue list --json number,labels` output on stdin and picks the next issue
 # to work. Drops `blocked` issues, and `awaiting-plan` issues UNLESS they also carry
 # `plan-approved` (a human approving by adding plan-approved on top of awaiting-plan
-# must still be selectable). Among the rest, plan-approved issues rank first (finish what
-# a human already vetted), then priority (P0<P1<P2<unlabelled), then issue number. Prints
-# the chosen issue number (or nothing if none qualify).
+# must still be selectable). When `only_issues` (a comma/space-separated allowlist of
+# issue numbers) is non-empty, only those issues are eligible — this is how parallel
+# lanes claim disjoint issues so they never collide on a branch/worktree. Among the rest,
+# plan-approved issues rank first (finish what a human already vetted), then priority
+# (P0<P1<P2<unlabelled), then issue number. Prints the chosen issue number (or nothing).
 select_issue_from_json() {
   local blk="${1:-${BLOCKED_LABEL:-blocked}}"
   local awaiting="${2:-${AWAITING_PLAN_LABEL:-awaiting-plan}}"
   local approved="${3:-${PLAN_APPROVED_LABEL:-plan-approved}}"
-  jq -r --arg blk "$blk" --arg awaiting "$awaiting" --arg approved "$approved" '
+  local only="${4:-${ONLY_ISSUES:-}}"
+  jq -r --arg blk "$blk" --arg awaiting "$awaiting" --arg approved "$approved" --arg only "$only" '
     def prio(ls): (ls | map(.name)
       | if index("P0") then 0
         elif index("P1") then 1
         elif index("P2") then 2
         else 3 end);
     def approved_rank(ls): (ls | map(.name) | if index($approved) then 0 else 1 end);
-    map(select(.labels | map(.name) as $n
-      | (($n | index($blk)) | not)
-        and ((($n | index($awaiting)) | not) or (($n | index($approved)) != null))))
+    ($only | gsub("[,]"; " ") | split(" ") | map(select(length > 0) | tonumber)) as $allow
+    | map(select(
+      (.labels | map(.name) as $n
+        | (($n | index($blk)) | not)
+          and ((($n | index($awaiting)) | not) or (($n | index($approved)) != null)))
+      and ($allow == [] or (.number as $num | $allow | index($num)))))
     | sort_by(approved_rank(.labels), prio(.labels), .number)
     | (.[0].number // empty)'
 }

@@ -227,7 +227,8 @@ All via environment variables (with defaults):
 | `AGENT_LABEL`   | `ready-for-agent`                    | Only issues with this label are picked             |
 | `HUMAN_LABEL`   | `needs-human`                        | Applied when a gate fails                          |
 | `BLOCKED_LABEL` | `blocked`                            | Issues with this label are skipped                 |
-| `WORKTREE_ROOT` | `../ralph-worktrees`                 | Where per-issue worktrees live                     |
+| `WORKTREE_ROOT` | `../ralph-worktrees`                 | Where per-issue worktrees live (give each lane its own) |
+| `ONLY_ISSUES`   | _(unset)_                            | Allowlist of issue numbers (`"12,15"`) — for parallel lanes |
 | `NM_BIN`        | `no-mistakes`                        | The gate CLI on `PATH`                             |
 | `NM_YES`        | `1`                                  | Autonomous (`axi run --yes`); empty = semi/HITL    |
 | `AGENT`         | `claude`                             | `claude` or `codex` (the plan/implement agent)     |
@@ -274,6 +275,32 @@ auto_fix:
   review: 3      # the in-scope review->remediate loop that replaced GATE 2
 ```
 
+### Running lanes in parallel
+
+The selector is greedy: every session independently grabs the highest-priority
+`ready-for-agent` issue. Run two sessions against the same backlog and they pick the
+**same** issue → same branch `agent/<n>-<slug>` → the shared no-mistakes daemon
+serializes pushes per branch and **cancels** the in-flight run; if they also share a
+`WORKTREE_ROOT` they delete each other's worktrees. So give each lane a **disjoint** set
+of issues:
+
+```bash
+# Terminal 1 — lane A
+ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a \
+  bash scripts/ralph/ralph-gh.sh 5 ; no-mistakes daemon stop
+
+# Terminal 2 — lane B
+ONLY_ISSUES="20,21" WORKTREE_ROOT=../wt-lane-b \
+  bash scripts/ralph/ralph-gh.sh 5 ; no-mistakes daemon stop
+```
+
+`ONLY_ISSUES` filters the backlog (both `ready-for-agent` and `plan-approved`) down to the
+listed numbers, so the lanes never select the same issue. A per-lane `WORKTREE_ROOT` keeps
+their worktrees from colliding. For **heavy** parallelism, run each lane from a **separate
+clone** of the target repo — that also gives each its own no-mistakes gate (the gate is
+keyed by the working directory's absolute path), fully isolating the daemon runs. For an
+ad-hoc clean gate drive, pause the other lanes first.
+
 ## Key files
 
 | File                              | Purpose                                                      |
@@ -297,7 +324,7 @@ The decision logic is factored out of the I/O so it can be unit-tested without a
 network or `gh`:
 
 - `select_issue_from_json` — `plan-approved`-first, blocked/awaiting-plan exclusion,
-  priority sort → next issue number
+  optional `ONLY_ISSUES` allowlist, priority sort → next issue number
 - `issue_stage_from_labels` — `plan` vs `implement` from an issue's labels
 - `model_flag` — per-stage `--model` flag for the agent runner (claude)
 - `parse_axi_outcome` — fail-safe TOON parser → `checks-passed`/`passed`/`failed`/
