@@ -86,6 +86,37 @@ just `git pull` to pick up updates. The split between machine-wide and per-proje
 
 Then run the loop from inside the project (Option 1). The sections below expand each step.
 
+### Running on Windows → use WSL (no console-window storm)
+
+On **native Windows** every child process the harness/no-mistakes spawns (git, gh, the
+agent CLI, the test runner, no-mistakes' workers) gets its **own console window**
+(`conhost.exe`). A single drain flashes many; a multi-lane drain piles up **dozens of
+empty windows that never close** (orphaned consoles whose parent already exited) until the
+machine is hard to use. This is how Windows allocates consoles for child processes — it
+isn't something the harness can suppress.
+
+**Linux processes create no console windows.** So on Windows, run lanes inside **WSL/Ubuntu**:
+
+```powershell
+wsl --install        # PowerShell (admin), then reboot
+```
+Then, inside the Ubuntu terminal:
+```bash
+bash /path/to/git-ralph/scripts/setup-wsl.sh   # installs jq/gh/no-mistakes user-local + clones git-ralph (sudo-free, idempotent)
+gh auth login                                  # GitHub login (separate from Windows)
+claude   # -> /login                           # agent CLI login (separate from Windows!) — without it plan/implement fail "agent rc=1 / Not logged in"
+```
+The toolchain **persists** — no reinstall per run. Future run = open the Ubuntu terminal and
+launch the lane. Everything else (the no-mistakes gate, `run-lane.sh`, per-lane `NM_HOME`,
+auto-merge) works unchanged; the gate still posts its full Pipeline/Evidence report on the PR.
+
+Per target repo (once), from its WSL clone: `git fetch --unshallow origin` (the gate push
+rejects shallow clones), set up the project's test toolchain (e.g. if `conda >= 24` blocks
+env creation on Terms of Service: `conda tos accept --override-channels --channel
+https://repo.anaconda.com/pkgs/main` and `.../pkgs/r`), then `setup-no-mistakes.sh` +
+`setup-labels.sh`. Run lanes exactly as below — `run-lane.sh` auto-detects the repo's
+default branch (override with `BASE_BRANCH=<base>` if needed).
+
 ### Option 1 — Point the harness at any repo (no vendoring)
 
 All `git`/`gh` operations run against the **current working directory**, and prompts

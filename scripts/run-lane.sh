@@ -50,6 +50,17 @@ printf '[lane %s] NM_HOME=%s ONLY_ISSUES=%s WORKTREE_ROOT=%s repo=%s\n' \
   "$lane" "$NM_HOME" "$issues" "$WORKTREE_ROOT" "$repo_dir"
 
 cd "$repo_dir"
+
+# ralph-gh.sh defaults BASE_BRANCH=main; on a repo whose default branch is dev/master that
+# makes `git worktree add ... origin/main` fail ("couldn't find remote ref main") and the
+# lane dies before it starts. Auto-detect the repo's default branch when BASE_BRANCH is
+# unset (local, no network — reads origin/HEAD).
+if [ -z "${BASE_BRANCH:-}" ]; then
+  BASE_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+  export BASE_BRANCH="${BASE_BRANCH:-main}"
+  printf '[lane %s] BASE_BRANCH auto-detected: %s\n' "$lane" "$BASE_BRANCH"
+fi
+
 # Ensure this lane's gate exists under its own NM_HOME (idempotent; refreshes if present).
 no-mistakes init >/dev/null 2>&1 || true
 
