@@ -314,7 +314,7 @@ can't solve alone.
 
 | Source | Symptom | Fix |
 |---|---|---|
-| Same issue picked | Both lanes take the top issue → same branch → daemon cancels the in-flight run | `ONLY_ISSUES` per lane (disjoint numbers) |
+| Same issue picked | Both lanes take the top issue → same branch → daemon cancels the in-flight run | **Atomic claim** (built in, below) — or `ONLY_ISSUES` per lane (disjoint numbers) |
 | Shared worktree root | A lane's `safe_worktree_remove` wipes another's worktree | Per-lane `WORKTREE_ROOT` (or separate clone) |
 | **Shared daemon** | One daemon per machine — any lane's `daemon stop` (or exit trap) kills **everyone's** in-flight gate runs | Per-lane **`NM_HOME`** → independent daemon/socket/db/gate |
 | Base moves faster than the gate | Long gate (tests + review) on a **hot file** → base advances → PR re-conflicts forever | Not a harness problem — see below |
@@ -354,6 +354,34 @@ ONLY_ISSUES="12,13" WORKTREE_ROOT=../wt-lane-a bash /path/to/git-ralph/scripts/r
 number doesn't help when the issues touch the **same hot file** — a ~30-min gate cycle can't
 converge against a base that moves every few minutes on that file. It is an *integration*
 problem (the base moves during your gate), not a *local* one — see the next section.
+
+#### Atomic issue claim (never run the same issue twice)
+
+`ONLY_ISSUES` only prevents collisions if you hand-partition the backlog correctly — reuse a
+lane name or overlap the lists and two sessions grab the same issue. Two safety nets now make
+that impossible without manual partitioning:
+
+- **Claim-at-selection (GitHub label, built in).** When `ralph-gh.sh` picks an issue it
+  immediately drops `ready-for-agent` and stamps **`in-progress`**, so any other session —
+  *even on another machine* — won't re-pick it for the whole run. The label is cleared on
+  every terminal/park outcome; a hard-killed worker leaves it set on purpose (remove the
+  label to requeue). Residual exposure is only the sub-second window between two selectors
+  listing at the same instant. Requires the `in-progress` label — run `setup-labels.sh`.
+- **`scripts/drain-claimed.sh <issues…>` (file-lock, same machine).** Closes even that
+  sub-second window. It claims each issue with an atomic `mkdir ~/.git-ralph/claims/<issue>`
+  (reclaiming a lock whose holder PID is dead), so concurrent sessions **work-steal** an
+  identical pool — pass every session the *same* full list, no splitting:
+
+  ```bash
+  # session A
+  cd ~/clone-a && bash /path/to/git-ralph/scripts/drain-claimed.sh 1109 1078 1083
+  # session B — same list; they split it, never overlap
+  cd ~/clone-b && bash /path/to/git-ralph/scripts/drain-claimed.sh 1109 1078 1083
+  ```
+
+  The lane id is the clone dir name (so `NM_HOME`/worktrees stay disjoint), and a per-lane
+  guard refuses to start if another live process is already draining that clone — run each
+  session from its **own clone** (a shared `.git` still races `git worktree`).
 
 #### Merge queue on the base branch (the real fix for base velocity)
 

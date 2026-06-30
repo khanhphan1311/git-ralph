@@ -154,3 +154,34 @@ setup() {
   result="$(select_issue_from_json blocked awaiting-plan plan-approved "20,21" <<<"$json")"
   [ "$result" = "21" ]
 }
+
+# --- #40 atomic claim: in-progress excluded absolutely (claimed by another worker) ---
+
+@test "in-progress issue is excluded (falls to an unclaimed lower priority)" {
+  json='[
+    {"number": 90, "labels": [{"name": "ready-for-agent"}, {"name": "in-progress"}, {"name": "P0"}]},
+    {"number": 91, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "" in-progress <<<"$json")"
+  [ "$result" = "91" ]
+}
+
+@test "in-progress overrides plan-approved (a claimed plan-approved issue is NOT re-selected)" {
+  # The #40 starvation case: a claimed plan-approved issue ranks first and would otherwise
+  # be returned every reselect, starving the rest. in-progress must exclude it absolutely.
+  json='[
+    {"number": 50, "labels": [{"name": "plan-approved"}, {"name": "awaiting-plan"}, {"name": "in-progress"}, {"name": "P0"}]},
+    {"number": 51, "labels": [{"name": "ready-for-agent"}, {"name": "P2"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "" in-progress <<<"$json")"
+  [ "$result" = "51" ]
+}
+
+@test "all candidates in-progress -> empty (nothing left to claim)" {
+  json='[
+    {"number": 60, "labels": [{"name": "ready-for-agent"}, {"name": "in-progress"}, {"name": "P0"}]},
+    {"number": 61, "labels": [{"name": "plan-approved"}, {"name": "in-progress"}, {"name": "P1"}]}
+  ]'
+  result="$(select_issue_from_json blocked awaiting-plan plan-approved "" in-progress <<<"$json")"
+  [ -z "$result" ]
+}
