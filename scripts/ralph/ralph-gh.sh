@@ -95,7 +95,7 @@ select_next_issue() {
     gh issue list --repo "$REPO" --state open --label "$PLAN_APPROVED_LABEL" \
       --json number,labels --limit 200
   } | jq -s 'add | unique_by(.number)' \
-    | select_issue_from_json "$BLOCKED_LABEL" "$AWAITING_PLAN_LABEL" "$PLAN_APPROVED_LABEL" "$ONLY_ISSUES"
+    | select_issue_from_json "$BLOCKED_LABEL" "$AWAITING_PLAN_LABEL" "$PLAN_APPROVED_LABEL" "$ONLY_ISSUES" "$IN_PROGRESS_LABEL"
 }
 
 # issue_stage <num> — print "plan" or "implement" for an issue, from its current labels.
