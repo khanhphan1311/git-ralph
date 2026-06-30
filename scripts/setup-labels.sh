@@ -17,6 +17,7 @@ create() { # $1=name $2=color $3=description
 create ready-for-agent 0E8A16 "Agent can pick this issue up"
 create needs-human     D93F0B "A gate failed; a human must look"
 create blocked         6A737D "Skipped by the selector until unblocked"
+create in-progress     C5DEF5 "Claimed by a worker; concurrent sessions skip it"
 create awaiting-plan   FEF2C0 "Plan posted; waiting for a human to approve (#21)"
 create plan-approved   0E8A16 "Plan approved; loop may implement (#21)"
 create P0              5319E7 "Priority 0 (highest)"

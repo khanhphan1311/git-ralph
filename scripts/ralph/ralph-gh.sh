@@ -21,15 +21,21 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 AGENT_LABEL="${AGENT_LABEL:-ready-for-agent}"
 HUMAN_LABEL="${HUMAN_LABEL:-needs-human}"
 BLOCKED_LABEL="${BLOCKED_LABEL:-blocked}"
+# Claimed-at-selection marker. On pick, an issue is dropped from AGENT_LABEL and stamped
+# IN_PROGRESS so a concurrent session (even on another machine) won't re-pick it during the
+# minutes-long run. Cleared on every terminal/park outcome; a hard-killed worker leaves it
+# set on purpose (surfaces a stuck issue — remove the label to requeue).
+IN_PROGRESS_LABEL="${IN_PROGRESS_LABEL:-in-progress}"
 # Plan-stage labels (#21 Delta A). `awaiting-plan` parks an issue waiting for a human to
 # vet its plan (skipped by the selector like `blocked`); `plan-approved` marks a vetted
 # plan so the loop resumes it ahead of fresh work and jumps straight to implement.
 AWAITING_PLAN_LABEL="${AWAITING_PLAN_LABEL:-awaiting-plan}"
 PLAN_APPROVED_LABEL="${PLAN_APPROVED_LABEL:-plan-approved}"
-# Parallel lanes: restrict this run to a comma/space-separated allowlist of issue numbers
-# so multiple sessions claim DISJOINT issues and never collide on a branch/worktree/gate
-# run. Empty = the whole backlog. Pair it with a per-lane WORKTREE_ROOT (or a separate
-# clone) so the lanes' worktrees can't delete each other.
+# Parallel lanes: restrict this run to a comma/space-separated allowlist of issue numbers.
+# Empty = the whole backlog. With the IN_PROGRESS claim above, sessions no longer NEED
+# disjoint allowlists (the claim dedupes the backlog — they work-steal); ONLY_ISSUES is now
+# just for scoping a session to a subset. Still pair with a per-lane WORKTREE_ROOT (or a
+# separate clone) so the lanes' worktrees can't delete each other.
 ONLY_ISSUES="${ONLY_ISSUES:-}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
 AGENT="${AGENT:-claude}"
@@ -161,12 +167,35 @@ run_axi() {
   fi
 }
 
+# claim_issue <num> — atomically-ish claim a freshly-selected issue: refuse if another
+# worker already holds it (carries IN_PROGRESS), else drop it from AGENT_LABEL and stamp
+# IN_PROGRESS. Shrinks the collision window from the whole run to a sub-second TOCTOU; the
+# file-lock in drain-claimed.sh closes that residual window on a single machine.
+claim_issue() {
+  local num="$1"
+  if gh issue view "$num" --repo "$REPO" --json labels -q '.labels[].name' 2>/dev/null \
+       | grep -qx "$IN_PROGRESS_LABEL"; then
+    return 1
+  fi
+  gh issue edit "$num" --repo "$REPO" \
+    --add-label "$IN_PROGRESS_LABEL" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+  return 0
+}
+
 # run_once — process exactly one issue. Returns 10 when the backlog is empty.
 run_once() {
   local num title slug branch wt build_prompt issue_ctx agent_rc stage approved_plan
-  local intent axi_out outcome action pr_url
+  local intent axi_out outcome action pr_url try cand
 
-  num="$(select_next_issue || true)"
+  # Select + claim, skipping issues a concurrent worker grabbed in the race window. Each
+  # reselect returns the next candidate (claimed ones lost AGENT_LABEL).
+  num=""
+  for try in 1 2 3 4 5; do
+    cand="$(select_next_issue || true)"
+    [ -n "${cand:-}" ] || break
+    if claim_issue "$cand"; then num="$cand"; break; fi
+    log "issue #$cand already in progress elsewhere — reselecting"
+  done
   if [ -z "${num:-}" ]; then
     log "No actionable issues left. <promise>COMPLETE</promise>"
     return 10
@@ -199,7 +228,8 @@ run_once() {
     else
       log "Semi mode -> parking #$num on '$AWAITING_PLAN_LABEL' for human approval"
       gh issue edit "$num" --repo "$REPO" \
-        --add-label "$AWAITING_PLAN_LABEL" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+        --add-label "$AWAITING_PLAN_LABEL" --remove-label "$AGENT_LABEL" \
+        --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
       return 0  # keep the worktree; the loop moves on to the next issue
     fi
   fi
@@ -276,7 +306,8 @@ finalize_pr() {
       --body "no-mistakes gate passed — CI green. PR ready for human review/merge."
   fi
   gh issue edit "$num" --repo "$REPO" \
-    --remove-label "$AGENT_LABEL" --remove-label "$PLAN_APPROVED_LABEL" >/dev/null 2>&1 || true
+    --remove-label "$AGENT_LABEL" --remove-label "$PLAN_APPROVED_LABEL" \
+    --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
   safe_worktree_remove "$wt"
 }
 
@@ -287,7 +318,8 @@ close_issue_done() {
   gh issue comment "$num" --repo "$REPO" \
     --body "no-mistakes pipeline passed and the PR merged. Done by ralph-gh (branch \`$branch\`)."
   gh issue edit "$num" --repo "$REPO" \
-    --remove-label "$AGENT_LABEL" --remove-label "$PLAN_APPROVED_LABEL" >/dev/null 2>&1 || true
+    --remove-label "$AGENT_LABEL" --remove-label "$PLAN_APPROVED_LABEL" \
+    --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
   gh issue close "$num" --repo "$REPO" 2>/dev/null || true
   safe_worktree_remove "$wt"
 }
@@ -299,7 +331,8 @@ mark_needs_human() {
   local num="$1" branch="$2" wt="$3" reason="$4"
   [ -d "$wt" ] && ( cd "$wt" && "$NM_BIN" axi abort >/dev/null 2>&1 || true )
   gh issue edit "$num" --repo "$REPO" \
-    --add-label "$HUMAN_LABEL" --remove-label "$AGENT_LABEL" >/dev/null 2>&1 || true
+    --add-label "$HUMAN_LABEL" --remove-label "$AGENT_LABEL" \
+    --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
   gh issue comment "$num" --repo "$REPO" \
     --body "ralph-gh stopped ($reason). Inspect branch \`$branch\` / worktree \`$wt\`; see \`no-mistakes axi status\` and \`no-mistakes axi logs --step <step>\`."
 }
