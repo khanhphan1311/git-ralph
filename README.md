@@ -265,7 +265,7 @@ All via environment variables (with defaults):
 | `AGENT`         | `claude`                             | `claude` or `codex` (the plan/implement agent)     |
 | `AUTO_PLAN`     | `0`                                  | `1` = auto-approve the plan inline; `0` = semi (await human) |
 | `PLAN_MODEL`    | `claude-opus-4-8`                    | Model for the Plan stage (strong reasoner)         |
-| `CODE_MODEL`    | `claude-sonnet-4-6`                  | Model for Implement (cheaper/faster)               |
+| `CODE_MODEL`    | `claude-sonnet-5`                    | Model for Implement (cheaper/faster)               |
 | `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` live                  |
 | `DRY_RUN`       | _(unset)_                            | If set, print the selection (and stage) and exit   |
 | `MAX_ITER`      | `20` (or first positional arg)       | Max loop iterations                                |

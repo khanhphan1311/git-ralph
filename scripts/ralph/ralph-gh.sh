@@ -44,7 +44,7 @@ AGENT="${AGENT:-claude}"
 # (claude only; no-op for codex). Review/test/lint moved to no-mistakes, which uses its
 # own repo-configured agent, so there is no REVIEW_MODEL here.
 PLAN_MODEL="${PLAN_MODEL:-claude-opus-4-8}"
-CODE_MODEL="${CODE_MODEL:-claude-sonnet-4-6}"
+CODE_MODEL="${CODE_MODEL:-claude-sonnet-5}"
 # Plan stage (#21 Delta A). AUTO_PLAN=1 auto-approves the plan inline (full-auto to the
 # gate); default 0 is "semi" — post the plan, park the issue on awaiting-plan, and let a
 # human approve by adding plan-approved. The canonical plan always lives in an issue
