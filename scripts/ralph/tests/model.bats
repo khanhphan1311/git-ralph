@@ -11,8 +11,8 @@ setup() {
 }
 
 @test "claude + a different model -> that model" {
-  result="$(model_flag claude claude-sonnet-4-6)"
-  [ "$result" = "--model claude-sonnet-4-6" ]
+  result="$(model_flag claude claude-sonnet-5)"
+  [ "$result" = "--model claude-sonnet-5" ]
 }
 
 @test "codex + model -> empty (no-op until codex supports --model)" {
