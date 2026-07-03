@@ -43,7 +43,11 @@ AGENT="${AGENT:-claude}"
 # mechanical so a cheaper/faster model suffices. Routed via model_flag at each invocation
 # (claude only; no-op for codex). Review/test/lint moved to no-mistakes, which uses its
 # own repo-configured agent, so there is no REVIEW_MODEL here.
-PLAN_MODEL="${PLAN_MODEL:-claude-opus-4-8}"
+# PLAN prefers Fable 5 (free for Max subscriptions until 2026-07-07) and falls back to
+# PLAN_FALLBACK_MODEL when it can't be called. After the free window, set
+# PLAN_MODEL=claude-opus-4-8 to stop the wasted fallback call per plan.
+PLAN_MODEL="${PLAN_MODEL:-claude-fable-5}"
+PLAN_FALLBACK_MODEL="${PLAN_FALLBACK_MODEL:-claude-opus-4-8}"
 CODE_MODEL="${CODE_MODEL:-claude-sonnet-5}"
 # Plan stage (#21 Delta A). AUTO_PLAN=1 auto-approves the plan inline (full-auto to the
 # gate); default 0 is "semi" — post the plan, park the issue on awaiting-plan, and let a
@@ -131,15 +135,23 @@ render_plan_html() {
   printf '%s' "$plan_text" | lavish render --output "${wt}/plan.html" >/dev/null 2>&1 || true
 }
 
-# run_plan_stage <num> <worktree> <issue-ctx> — generate a plan with PLAN_MODEL, post it
-# to the issue (always, for audit), and render plan.html if lavish is available.
+# run_plan_stage <num> <worktree> <issue-ctx> — generate a plan with PLAN_MODEL (falling
+# back to PLAN_FALLBACK_MODEL if PLAN_MODEL can't be called), post it to the issue (always,
+# for audit), and render plan.html if lavish is available.
 run_plan_stage() {
-  local num="$1" wt="$2" issue_ctx="$3" plan_prompt plan_text
+  local num="$1" wt="$2" issue_ctx="$3" plan_prompt plan_text plan_rc
   plan_prompt="$(mktemp)"
   { prepend_rules "${PROMPT_DIR}/rules.md"; cat "${PROMPT_DIR}/plan.md"; echo;
     echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$plan_prompt"
   log "Plan (#$num) with model: ${PLAN_MODEL:-<agent default>}"
-  plan_text="$(cd "$wt" && agent_run "$plan_prompt" "$PLAN_MODEL" || true)"
+  set +e
+  plan_text="$(cd "$wt" && agent_run "$plan_prompt" "$PLAN_MODEL")"; plan_rc=$?
+  if { [ "$plan_rc" -ne 0 ] || [ -z "$plan_text" ]; } \
+     && [ -n "$PLAN_FALLBACK_MODEL" ] && [ "$PLAN_FALLBACK_MODEL" != "$PLAN_MODEL" ]; then
+    log "Plan model $PLAN_MODEL unavailable (rc=$plan_rc) - falling back to $PLAN_FALLBACK_MODEL"
+    plan_text="$(cd "$wt" && agent_run "$plan_prompt" "$PLAN_FALLBACK_MODEL")"
+  fi
+  set -e
   [ -n "$plan_text" ] || plan_text="(plan agent produced no output)"
   post_plan "$num" "$plan_text"
   render_plan_html "$wt" "$plan_text"
