@@ -66,7 +66,8 @@ requeue() {
   branch="$(git branch --list "agent/${num}-*" --format='%(refname:short)' | head -1)"
   wt="$WT_ROOT/wt-$num"
   if [ -d "$wt" ]; then
-    if ! git -C "$wt" diff --quiet 2>/dev/null || ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
+    # status --porcelain also catches untracked files, which `diff --quiet` misses
+    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
       git -C "$wt" add -A >/dev/null 2>&1
       git -C "$wt" commit -qm "wip: watchdog backup before requeue" >/dev/null 2>&1 || true
     fi
