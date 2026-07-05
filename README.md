@@ -384,6 +384,29 @@ that impossible without manual partitioning:
   guard refuses to start if another live process is already draining that clone — run each
   session from its **own clone** (a shared `.git` still races `git worktree`).
 
+#### Watchdog — survive agent usage-limit resets (fully AFK)
+
+On subscription plans the agent CLI stops mid-drain when the usage window is exhausted:
+the remaining issues fail `agent rc=1` → `needs-human`, and the loop halts until a human
+cleans up and relaunches. **`scripts/watchdog.sh <pool>`** closes that last manual step:
+
+```bash
+cd ~/lane-a && nohup bash /path/to/git-ralph/scripts/watchdog.sh 12 15 18 > ~/watchdog-a.log 2>&1 &
+```
+
+Loop: drain (`drain-claimed.sh`) → on exit, probe `claude -p` every `PROBE_INTERVAL`
+(default 600s) until the limit resets → **requeue** each failed issue (backup-tag the
+half-done branch as `ralph-bak/<N>-<attempt>` with uncommitted WIP committed in, remove
+worktree+branch so the rerun starts clean, clear a stale claim, relabel
+`-needs-human -in-progress +ready-for-agent`, audit comment) → relaunch → repeat until
+the pool is drained. Issues stuck on `in-progress` with a dead claim lock (hard-killed
+run) are requeued too.
+
+Safety: **`REQUEUE_MAX` (default 3) requeues per issue** — past that it stays
+`needs-human` for a real human (a genuine bug would requeue forever); plus a no-progress
+guard (sleeps instead of spinning when another session holds all the claims). One
+watchdog per clone; several may share the same pool — the atomic claim splits it.
+
 #### Merge queue on the base branch (the real fix for base velocity)
 
 A **merge queue** is the proper, infrastructure-level fix for "the base moves faster than
