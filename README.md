@@ -269,6 +269,7 @@ All via environment variables (with defaults):
 | `CODE_MODEL`    | `claude-sonnet-5`                    | Model for Implement (cheaper/faster)               |
 | `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` live                  |
 | `DRY_RUN`       | _(unset)_                            | If set, print the selection (and stage) and exit   |
+| `RALPH_HERDR`   | `1`                                  | Report lane state to Herdr when in a Herdr pane; `0` disables (see "Watching lanes with Herdr") |
 | `MAX_ITER`      | `20` (or first positional arg)       | Max loop iterations                                |
 
 ### Plan stage & approval (semi vs `AUTO_PLAN`)
@@ -455,6 +456,25 @@ faster, and **long term, split the hot file** so parallel PRs stop colliding on 
 3. **Partition lanes by file/module ownership** — never run two lanes that touch the same hot file.
 
 For an ad-hoc clean gate drive, pause the other lanes first.
+
+#### Watching lanes with Herdr (optional)
+
+[Herdr](https://herdr.dev) is an agent multiplexer ("tmux for agents") — one terminal, a
+pane per lane, detach/reattach (even from a phone over SSH), and a sidebar that rolls each
+agent up to 🟡 working / 🔴 blocked / 🟢 idle. Run each lane in its own Herdr pane (on
+Linux/macOS, or Windows via WSL) to monitor a fleet at a glance.
+
+Because git-ralph runs its agents **headless** (`claude -p`), Herdr's screen auto-detection
+can't classify a lane on its own — so the harness **reports its own state**. When it runs
+**inside a Herdr pane** (`HERDR_PANE_ID` set) with the `herdr` CLI on `PATH`, it emits
+`working` (plan/implement/gate), `blocked` (needs-human or awaiting-plan — plus a desktop
+notification), and `idle` (backlog drained) to the sidebar. No flag needed — it
+auto-activates inside Herdr and is a no-op everywhere else. Disable with `RALPH_HERDR=0`.
+
+```bash
+# inside a Herdr pane (one per lane):
+bash /path/to/git-ralph/scripts/run-lane.sh a "12,13" 5
+```
 
 ## Key files
 

@@ -124,6 +124,25 @@ axi_dispatch() {
   esac
 }
 
+# herdr_state_for <event-token>
+# Pure map from a harness event to a Herdr *semantic* agent state (the ones
+# `herdr pane report-agent --state` accepts: idle/working/blocked/unknown — `done` is
+# detection-derived, not reportable). Because git-ralph runs its agents headless, Herdr's
+# screen-manifest auto-detection can't classify a lane, so the harness reports state itself
+# and this is the mapping:
+#   working                      -> working  (plan/implement/gate actively running)
+#   needs-human | awaiting-plan  -> blocked  (the lane halts until a human acts)
+#   idle | complete              -> idle     (finished / backlog drained)
+#   * (unknown)                  -> unknown  (honest fallback)
+herdr_state_for() {
+  case "${1:-}" in
+    working)                    echo working ;;
+    needs-human|awaiting-plan)  echo blocked ;;
+    idle|complete)              echo idle ;;
+    *)                          echo unknown ;;
+  esac
+}
+
 # harness_version
 # Prints the harness version string (`git-ralph <semver>`) to stdout. Pure and
 # sourceable — the version is kept in lock-step with package.json's "version".
