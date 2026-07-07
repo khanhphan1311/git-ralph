@@ -464,6 +464,17 @@ pane per lane, detach/reattach (even from a phone over SSH), and a sidebar that 
 agent up to 🟡 working / 🔴 blocked / 🟢 idle. Run each lane in its own Herdr pane (on
 Linux/macOS, or Windows via WSL) to monitor a fleet at a glance.
 
+Install it (run the Linux/macOS one-liner **inside WSL** on Windows):
+
+```bash
+curl -fsSL https://herdr.dev/install.sh | sh
+# alternatives: brew install herdr · mise use -g herdr · a binary from the releases page
+# native Windows (preview): irm https://herdr.dev/install.ps1 | iex   (but lanes run in WSL)
+```
+
+See the [install docs](https://herdr.dev/docs/install/) for channels/updates. Then start
+Herdr (`herdr`) and run each lane in its own pane.
+
 Because git-ralph runs its agents **headless** (`claude -p`), Herdr's screen auto-detection
 can't classify a lane on its own — so the harness **reports its own state**. When it runs
 **inside a Herdr pane** (`HERDR_PANE_ID` set) with the `herdr` CLI on `PATH`, it emits
