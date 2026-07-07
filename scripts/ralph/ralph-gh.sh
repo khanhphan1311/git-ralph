@@ -61,10 +61,32 @@ PROMPT_DIR="${PROMPT_DIR:-${HERE}/prompts}"
 # path: a gate pauses the harness and escalates to a human instead of auto-resolving.
 NM_BIN="${NM_BIN:-no-mistakes}"
 NM_YES="${NM_YES:-1}"
+# Herdr integration (optional). git-ralph runs its agents headless, so Herdr's screen
+# auto-detection can't classify a lane — the harness reports its own semantic state so the
+# Herdr sidebar shows which lane is working/blocked at a glance across parallel lanes.
+# Auto-activates only when running INSIDE a Herdr pane (HERDR_PANE_ID set) with `herdr` on
+# PATH; a no-op everywhere else. Set RALPH_HERDR=0 to disable even inside a pane.
+RALPH_HERDR="${RALPH_HERDR:-1}"
 DRY_RUN="${DRY_RUN:-}"
 MAX_ITER="${1:-20}"
 
 log() { printf '\033[1;34m[ralph]\033[0m %s\n' "$*"; }
+
+# herdr_report <event-token> [status-text] — best-effort report of this lane's state to
+# Herdr's sidebar (see herdr_state_for). Self-addresses via $HERDR_PANE_ID, which Herdr
+# sets in each pane. Fully guarded and never fatal: off unless inside a Herdr pane with the
+# CLI present. A `blocked` state also fires a desktop notification so an operator is pinged.
+herdr_report() {
+  [ "$RALPH_HERDR" = 1 ] || return 0
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  command -v herdr >/dev/null 2>&1 || return 0
+  local state status; state="$(herdr_state_for "$1")"; status="${2:-}"
+  herdr pane report-agent "$HERDR_PANE_ID" --source git-ralph --agent ralph \
+    --state "$state" ${status:+--custom-status "$status"} >/dev/null 2>&1 || true
+  [ "$state" = blocked ] \
+    && herdr notification show "git-ralph: ${status:-needs a human}" --sound request >/dev/null 2>&1 || true
+  return 0
+}
 
 # agent_run <prompt-file> [model] — run the configured agent with the prompt's contents,
 # selecting a per-stage model when one is given (claude only; no-op for codex) (#21 Delta B).
@@ -210,9 +232,11 @@ run_once() {
   done
   if [ -z "${num:-}" ]; then
     log "No actionable issues left. <promise>COMPLETE</promise>"
+    herdr_report complete "idle"
     return 10
   fi
   log "Selected issue #$num"
+  herdr_report working "#$num"
 
   title="$(gh issue view "$num" --repo "$REPO" --json title -q .title)"
   slug="$(slugify "$title")"
@@ -242,6 +266,7 @@ run_once() {
       gh issue edit "$num" --repo "$REPO" \
         --add-label "$AWAITING_PLAN_LABEL" --remove-label "$AGENT_LABEL" \
         --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
+      herdr_report awaiting-plan "approve plan #$num"
       return 0  # keep the worktree; the loop moves on to the next issue
     fi
   fi
@@ -254,6 +279,7 @@ run_once() {
     echo "## GitHub issue #$num"; echo "$issue_ctx"; } > "$build_prompt"
 
   log "Implement (#$num) with model: ${CODE_MODEL:-<agent default>}"
+  herdr_report working "impl #$num"
   set +e; ( cd "$wt" && agent_run "$build_prompt" "$CODE_MODEL" ); agent_rc=$?; set -e
   if [ "$agent_rc" -ne 0 ]; then
     log "FAIL #$num (agent rc=$agent_rc) -> needs-human"
@@ -273,6 +299,7 @@ run_once() {
   # The gate: one headless `axi run` replaces GATE 1 (validate) + GATE 2 (review) +
   # push + PR. no-mistakes runs its fixed pipeline with its own auto-fix loop.
   log "GATE: no-mistakes axi run (#$num, yes=${NM_YES:-0})"
+  herdr_report working "gate #$num"
   intent="$(build_intent "$num")"
   set +e; axi_out="$(run_axi "$wt" "$intent")"; set -e
 
@@ -320,6 +347,7 @@ finalize_pr() {
   gh issue edit "$num" --repo "$REPO" \
     --remove-label "$AGENT_LABEL" --remove-label "$PLAN_APPROVED_LABEL" \
     --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
+  herdr_report working "PR ready #$num"
   safe_worktree_remove "$wt"
 }
 
@@ -333,6 +361,7 @@ close_issue_done() {
     --remove-label "$AGENT_LABEL" --remove-label "$PLAN_APPROVED_LABEL" \
     --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
   gh issue close "$num" --repo "$REPO" 2>/dev/null || true
+  herdr_report working "merged #$num"
   safe_worktree_remove "$wt"
 }
 
@@ -347,6 +376,7 @@ mark_needs_human() {
     --remove-label "$IN_PROGRESS_LABEL" >/dev/null 2>&1 || true
   gh issue comment "$num" --repo "$REPO" \
     --body "ralph-gh stopped ($reason). Inspect branch \`$branch\` / worktree \`$wt\`; see \`no-mistakes axi status\` and \`no-mistakes axi logs --step <step>\`."
+  herdr_report needs-human "needs-human #$num"
 }
 
 # safe_worktree_remove <worktree-path>
