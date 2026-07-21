@@ -266,7 +266,7 @@ All via environment variables (with defaults):
 | `AUTO_PLAN`     | `0`                                  | `1` = auto-approve the plan inline; `0` = semi (await human) |
 | `PLAN_MODEL`    | `claude-fable-5`                     | Model for the Plan stage; falls back to `PLAN_FALLBACK_MODEL` if it can't be called |
 | `PLAN_FALLBACK_MODEL` | `claude-opus-4-8`              | Used when `PLAN_MODEL` fails to run (empty to disable fallback) |
-| `CODE_MODEL`    | `claude-sonnet-5`                    | Model for Implement (cheaper/faster)               |
+| `CODE_MODEL`    | `claude-opus-4-8`                    | Model for Implement                                |
 | `PROMPT_DIR`    | `<script dir>/prompts`               | Where `plan.md` / `build.md` live                  |
 | `DRY_RUN`       | _(unset)_                            | If set, print the selection (and stage) and exit   |
 | `RALPH_HERDR`   | `1`                                  | Report lane state to Herdr when in a Herdr pane; `0` disables (see "Watching lanes with Herdr") |
