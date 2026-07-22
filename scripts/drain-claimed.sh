@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# drain-claimed.sh <issue ...> — drain a pool of issues with an ATOMIC per-issue claim so
-# concurrent sessions on this machine NEVER work the same issue. The lock dedupes the pool
-# (sessions work-steal), so overlapping/identical issue lists are safe. Run it from EACH
-# session's OWN repo clone — the lane id is derived from the clone dir, so NM_HOME and
-# worktrees never collide across sessions either.
+# drain-claimed.sh <issue[:model] ...> — drain a pool of issues with an ATOMIC per-issue
+# claim so concurrent sessions on this machine NEVER work the same issue. The lock dedupes
+# the pool (sessions work-steal), so overlapping/identical issue lists are safe. Run it
+# from EACH session's OWN repo clone — the lane id is derived from the clone dir, so
+# NM_HOME and worktrees never collide across sessions either.
 #
-#   (session A)  cd ~/sn-lane-a && drain-claimed.sh 1109 1078 1083
-#   (session B)  cd ~/sn-lane-b && drain-claimed.sh 1109 1078 1083   # same list -> they split it
+#   (session A)  cd ~/sn-lane-a && drain-claimed.sh 1109:opus 1078 1083
+#   (session B)  cd ~/sn-lane-b && drain-claimed.sh 1109:opus 1078 1083   # same list -> they split it
+#
+# Per-issue implement model: annotate hard issues with `:opus` (claude-opus-4-8), easy
+# ones with nothing (harness default) or `:sonnet` (claude-sonnet-5); any other suffix is
+# a full model id passed through (e.g. 1510:claude-haiku-4-5). The claim is keyed by the
+# ISSUE NUMBER only, so sessions annotating differently still dedupe.
 #
 # Claim = an atomic `mkdir` under ~/.git-ralph/claims/<issue>; a stale lock whose holder
 # PID is dead is reclaimed. Held for the whole run of that issue, released when it finishes.
 set -uo pipefail
 
 GR="${GIT_RALPH_DIR:-$HOME/git-ralph}"
+# shellcheck source=ralph/lib.sh
+source "$GR/scripts/ralph/lib.sh"   # pool_issue_of / pool_model_of
 CLAIMS="${GIT_RALPH_CLAIMS:-$HOME/.git-ralph/claims}"; mkdir -p "$CLAIMS"
 lane="${LANE:-$(basename "$PWD")}"     # unique per clone/session -> NM_HOME/worktree disjoint
 ITERS="${ITERS:-1}"
@@ -50,11 +57,15 @@ claim() {                              # atomic; reclaim if the holder PID is de
 }
 
 worked=0
-for issue in $(printf '%s ' "$@" | tr ',' ' '); do
-  [ -n "$issue" ] || continue
+for token in $(printf '%s ' "$@" | tr ',' ' '); do
+  [ -n "$token" ] || continue
+  issue="$(pool_issue_of "$token")"
+  model="$(pool_model_of "$token")"
   if ! claim "$issue"; then echo "[skip]  #$issue - claimed by another session"; continue; fi
-  echo "[claim] #$issue -> lane '$lane' (base=$BASE_BRANCH)"
-  ( AUTO_PLAN="${AUTO_PLAN:-1}" bash "$GR/scripts/run-lane.sh" "$lane" "$issue" "$ITERS" )
+  echo "[claim] #$issue -> lane '$lane' (base=$BASE_BRANCH${model:+, code-model=$model})"
+  # shellcheck disable=SC2086  # ${model:+...} expands to one env assignment word for `env`
+  ( AUTO_PLAN="${AUTO_PLAN:-1}" env ${model:+CODE_MODEL="$model"} \
+      bash "$GR/scripts/run-lane.sh" "$lane" "$issue" "$ITERS" )
   rm -rf "${CLAIMS:?}/$issue"
   worked=$((worked+1))
 done

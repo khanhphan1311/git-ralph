@@ -369,17 +369,23 @@ that impossible without manual partitioning:
   every terminal/park outcome; a hard-killed worker leaves it set on purpose (remove the
   label to requeue). Residual exposure is only the sub-second window between two selectors
   listing at the same instant. Requires the `in-progress` label — run `setup-labels.sh`.
-- **`scripts/drain-claimed.sh <issues…>` (file-lock, same machine).** Closes even that
-  sub-second window. It claims each issue with an atomic `mkdir ~/.git-ralph/claims/<issue>`
+- **`scripts/drain-claimed.sh <issue[:model]…>` (file-lock, same machine).** Closes even
+  that sub-second window. It claims each issue with an atomic `mkdir ~/.git-ralph/claims/<issue>`
   (reclaiming a lock whose holder PID is dead), so concurrent sessions **work-steal** an
   identical pool — pass every session the *same* full list, no splitting:
 
   ```bash
-  # session A
-  cd ~/clone-a && bash /path/to/git-ralph/scripts/drain-claimed.sh 1109 1078 1083
+  # session A — #1109 is hard: implement it with Opus; the rest use the default (Sonnet 5)
+  cd ~/clone-a && bash /path/to/git-ralph/scripts/drain-claimed.sh 1109:opus 1078 1083
   # session B — same list; they split it, never overlap
-  cd ~/clone-b && bash /path/to/git-ralph/scripts/drain-claimed.sh 1109 1078 1083
+  cd ~/clone-b && bash /path/to/git-ralph/scripts/drain-claimed.sh 1109:opus 1078 1083
   ```
+
+  **Per-issue implement model:** annotate a token with `:opus` (`claude-opus-4-8`) for a
+  hard issue, `:sonnet` (`claude-sonnet-5`) to be explicit, or any full model id
+  (`1510:claude-haiku-4-5`); bare numbers use the harness default. The claim is keyed by
+  the issue **number**, so sessions annotating differently still dedupe. `watchdog.sh`
+  accepts the same tokens and preserves the annotation across requeue cycles.
 
   The lane id is the clone dir name (so `NM_HOME`/worktrees stay disjoint), and a per-lane
   guard refuses to start if another live process is already draining that clone — run each
