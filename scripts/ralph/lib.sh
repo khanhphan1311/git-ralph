@@ -124,6 +124,31 @@ axi_dispatch() {
   esac
 }
 
+# pool_issue_of <pool-token>
+# A drain-pool token is `<issue>[:model]` — e.g. `1496:opus` runs #1496 with Opus on the
+# implement stage while `1502` uses the harness default. Prints the issue number.
+pool_issue_of() {
+  printf '%s\n' "${1%%:*}"
+}
+
+# pool_model_of <pool-token>
+# Prints the CODE_MODEL for a pool token: `opus`/`sonnet` shorthands expand to the
+# current model IDs, any other suffix passes through verbatim as a full model id, and no
+# suffix prints nothing (use the harness default).
+pool_model_of() {
+  case "$1" in
+    *:*) ;;
+    *) return 0 ;;
+  esac
+  local m="${1#*:}"
+  case "$m" in
+    opus)   echo claude-opus-4-8 ;;
+    sonnet) echo claude-sonnet-5 ;;
+    "")     ;;
+    *)      printf '%s\n' "$m" ;;
+  esac
+}
+
 # herdr_state_for <event-token>
 # Pure map from a harness event to a Herdr *semantic* agent state (the ones
 # `herdr pane report-agent --state` accepts: idle/working/blocked/unknown — `done` is

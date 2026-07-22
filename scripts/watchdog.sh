@@ -35,8 +35,20 @@ lane="${LANE:-$(basename "$PWD")}"
 WT_ROOT="${WORKTREE_ROOT:-../ralph-wt-$lane}"
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 
-[ $# -gt 0 ] || { echo "usage: watchdog.sh <issue ...>" >&2; exit 1; }
+[ $# -gt 0 ] || { echo "usage: watchdog.sh <issue[:model] ...>" >&2; exit 1; }
+# Pool tokens may carry a per-issue implement model (`1496:opus` — see drain-claimed.sh).
+# gh calls need the bare number; relaunches keep the full token so the annotation survives
+# requeue cycles.
+# shellcheck source=ralph/lib.sh
+source "$HERE/ralph/lib.sh"   # pool_issue_of
 pool="$(printf '%s ' "$@" | tr ',' ' ')"
+token_of() {                   # bare issue number -> its original pool token
+  local t
+  for t in $pool; do
+    [ "$(pool_issue_of "$t")" = "$1" ] && { printf '%s\n' "$t"; return 0; }
+  done
+  printf '%s\n' "$1"
+}
 
 log() { printf '[watchdog %s] %s\n' "$(date '+%F %T')" "$*"; }
 
@@ -88,8 +100,9 @@ requeue() {
 }
 
 snapshot() {
-  local n
-  for n in $pool; do
+  local t n
+  for t in $pool; do
+    n="$(pool_issue_of "$t")"
     printf '%s:%s:%s\n' "$n" "$(issue_state "$n")" "$(issue_labels "$n" | sort | tr '\n' ',')"
   done
 }
@@ -97,7 +110,8 @@ snapshot() {
 prev_snap=""
 while :; do
   runnable=""; to_requeue=""; capped=""; open_left=""
-  for n in $pool; do
+  for t in $pool; do
+    n="$(pool_issue_of "$t")"
     [ "$(issue_state "$n")" = "OPEN" ] || continue
     open_left="$open_left $n"
     labels="$(issue_labels "$n")"
@@ -106,7 +120,7 @@ while :; do
       cnt="$(cat "$STATE/$n.requeue" 2>/dev/null || echo 0)"
       if [ "$cnt" -ge "$REQUEUE_MAX" ]; then capped="$capped $n"; else to_requeue="$to_requeue $n"; fi
     elif printf '%s\n' "$labels" | grep -qxE "${AGENT_LABEL}|${PLAN_APPROVED_LABEL}"; then
-      runnable="$runnable $n"
+      runnable="$runnable $t"   # keep the token so the :model annotation survives
     fi
   done
 
@@ -121,7 +135,7 @@ while :; do
     cnt="$(cat "$STATE/$n.requeue" 2>/dev/null || echo 0)"; cnt=$((cnt+1))
     echo "$cnt" > "$STATE/$n.requeue"
     requeue "$n" "$cnt"
-    runnable="$runnable $n"
+    runnable="$runnable $(token_of "$n")"   # re-attach the :model annotation
   done
 
   log "cycle: draining$runnable"
