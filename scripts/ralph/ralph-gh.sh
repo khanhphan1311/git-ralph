@@ -40,16 +40,17 @@ ONLY_ISSUES="${ONLY_ISSUES:-}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-../ralph-worktrees}"
 AGENT="${AGENT:-claude}"
 # Per-stage models (#21 Delta B). Plan wants the strongest reasoner; implement runs on
-# Opus 4.8 for output quality (set CODE_MODEL=claude-sonnet-5 to trade quality for
-# cost/speed). Routed via model_flag at each invocation (claude only; no-op for codex).
-# Review/test/lint moved to no-mistakes, which uses its own repo-configured agent, so
-# there is no REVIEW_MODEL here.
+# Sonnet 5 — Opus 4.8 was tried (PR #49) but burns the subscription usage window too fast
+# on multi-issue drains, so Sonnet 5 is the deliberate default (near-Opus coding quality
+# at Sonnet cost). Set CODE_MODEL=claude-opus-4-8 per-run when a hard issue warrants it.
+# Routed via model_flag at each invocation (claude only; no-op for codex). Review/test/
+# lint moved to no-mistakes, which uses its own repo-configured agent, so no REVIEW_MODEL.
 # PLAN prefers Fable 5 (free for Max subscriptions until 2026-07-07) and falls back to
 # PLAN_FALLBACK_MODEL when it can't be called. After the free window, set
 # PLAN_MODEL=claude-opus-4-8 to stop the wasted fallback call per plan.
 PLAN_MODEL="${PLAN_MODEL:-claude-fable-5}"
 PLAN_FALLBACK_MODEL="${PLAN_FALLBACK_MODEL:-claude-opus-4-8}"
-CODE_MODEL="${CODE_MODEL:-claude-opus-4-8}"
+CODE_MODEL="${CODE_MODEL:-claude-sonnet-5}"
 # Plan stage (#21 Delta A). AUTO_PLAN=1 auto-approves the plan inline (full-auto to the
 # gate); default 0 is "semi" — post the plan, park the issue on awaiting-plan, and let a
 # human approve by adding plan-approved. The canonical plan always lives in an issue
